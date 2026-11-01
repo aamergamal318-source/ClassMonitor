@@ -20,3 +20,16 @@
 - [ ] Create local teacher/agent installation packages and verify uninstall paths in isolated test directories.
 - [ ] Update progress, feature/settings matrix, deployment/privacy/security/contribution guidance.
 - [ ] Obtain explicit approval before public release or real-device deployment.
+
+## Single-file setup (`ClassMonitorSetup.exe`), requested 2026-11-01
+
+Goal: one exe installs Teacher or Student on a device; later updates come from inside the application, not from setup. Start these when the owner asks; do all of them together.
+
+- [ ] Add Start menu and desktop shortcuts plus an optional "launch after install" choice to setup; remove them on uninstall and roll them back on failure.
+- [ ] Support devices with several Windows accounts; setup currently installs for the current account only. Decide the approach with the owner, since all-users setup needs elevation.
+- [ ] Add a visible, opt-in student setup path for automatic start and firewall access, and a clear next step for enrollment. Keep the rule that setup never enables these silently and never starts monitoring.
+- [ ] Make `scripts/Publish-Release.ps1` build setup after the ZIP, verify its payload and attach both to the release. The ZIP must stay attached: in-app update downloads it.
+- [ ] Reduce the 410 MB per-device install size, mainly the 229 MB setup copy kept for uninstall.
+- [ ] Keep the installed version in Apps correct after an in-app update (receipt and `DisplayVersion`); first confirm the suspected stale value with a test.
+- [ ] Test on Windows for real: setup UI, install, uninstall, and in-app update download from a release. Not yet executed.
+- [ ] Prepare a stable release so in-app update works; it only reads the latest stable public release. **Publishing needs the owner's explicit approval at that moment, because it reaches every installed copy.**
