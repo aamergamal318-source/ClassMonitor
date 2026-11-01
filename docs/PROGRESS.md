@@ -17,4 +17,11 @@
 7. Localization/accessibility/resilience/performance: assigned work planned; no load numbers claimed.
 8. QA/review/installer/local packaging: pending. No physical device deployment or public publishing authorized.
 
+## SecurityChecks crash fix, 2026-11-01
+- Symptom: `SecurityChecks.exe` ended with unhandled .NET exception `0xe0434352` and started Windows Error Reporting. Reproduced on the unpatched build: `CryptographicException: Access denied` importing temporary keys at `Program.cs:264` called from line 14 (low-integrity token, matching the sandbox failure in `SECURITY_REVIEW.md` and the empty artifact directory of the first run; the original run left no event-log entry) and `IOException` creating the working-directory-relative artifact path at line 12.
+- Root cause: fixture setup ran outside the `try`, and the first failing check aborted the rest. `AeDebug` registers `vsjitdebugger.exe` on this machine, so an uncaught exception could stop at interactive crash UI.
+- Fix, with no check removed or weakened: setup failure exits 2, each check failure is named with its stack trace and later checks still run (exit 1), escaped or background exceptions exit 3, WER UI is disabled for the process and its children, and audit files moved to per-run `%TEMP%` directories.
+- Evidence with SDK 10.0.403: SecurityChecks **43 PASS** (40 existing plus 3 harness regression checks), exit 0, plus 10 consecutive clean runs; ConsoleChecks 26 PASS; UpdateChecks 26 PASS; LoadProbe `--seconds 5` exit 0. An unguarded crash started 0 `WerFault` processes after the fix versus 1 before. Removing the active-lesson guard in a scratch copy produced 4 named failures and exit 1.
+- Limitations: ScreenStreaming was not executed (`--visual` was not requested; it exits 2 without opening a window). ConsoleChecks, UpdateChecks, LoadProbe and ScreenStreaming still run code before their `try` and do not disable WER UI, and test projects are outside `ClassMonitor.sln`, so a solution build does not rebuild them.
+
 Only replace these statuses with executed evidence. Record exact test commands/results and remaining release gates after integration.

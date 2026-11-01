@@ -8,19 +8,52 @@ using System.Text;
 using System.Text.Json;
 using ClassMonitor.Shared.Management;
 
-string artifacts = Path.GetFullPath(Path.Combine("tests", "SecurityChecks", "artifacts", Guid.NewGuid().ToString("N")));
-Directory.CreateDirectory(artifacts);
+string? selfTest = CheckHarness.Install(args);
 int passed = 0;
-using var student = Certificate("Simulated student");
-using var teacher = Certificate("Simulated teacher");
-using var rogue = Certificate("Unknown teacher");
-using var expired = Certificate("Expired", DateTimeOffset.UtcNow.AddHours(-2), DateTimeOffset.UtcNow.AddHours(-1));
-using var wrongPurpose = Certificate("Wrong purpose", mutualTls: false);
-var request = EnrollmentManager.CreateRequest(student, "Simulated device");
-var package = EnrollmentManager.CreatePackage(request, teacher, "school-1", "class-1", "Teacher",
-    TeacherRole.Teacher, ClassroomPermission.View | ClassroomPermission.Message | ClassroomPermission.Files,
-    DateTimeOffset.UtcNow.AddHours(2));
-var enrollment = Validate(package);
+var failures = new List<string>();
+switch (selfTest)
+{
+    case null or "setup-failure": break;
+    case "failing-check":
+        await Check("self-test failing check", () => Assert(false));
+        await Check("self-test later check still runs", () => { });
+        return CheckHarness.Summarize(passed, failures, null);
+    case "background-exception":
+        new Thread(() => throw new InvalidOperationException("Simulated background failure")).Start();
+        await Task.Delay(TimeSpan.FromSeconds(30));
+        return CheckHarness.ExitUnexpectedFailure;
+    case "unguarded-crash": throw new InvalidOperationException("Simulated unguarded crash");
+    default:
+        Console.Error.WriteLine("Unknown harness self-test: " + selfTest);
+        return CheckHarness.ExitUnexpectedFailure;
+}
+var identities = new List<X509Certificate2>();
+string artifacts = Path.Combine(Path.GetTempPath(), "ClassMonitor.SecurityChecks", Guid.NewGuid().ToString("N"));
+X509Certificate2 student, teacher, rogue, expired, wrongPurpose;
+DeviceEnrollmentRequest request;
+EnrollmentPackage package;
+DeviceEnrollment enrollment;
+try
+{
+    if (selfTest == "setup-failure") throw new InvalidOperationException("Simulated setup failure");
+    Directory.CreateDirectory(artifacts);
+    student = Identity("Simulated student");
+    teacher = Identity("Simulated teacher");
+    rogue = Identity("Unknown teacher");
+    expired = Identity("Expired", DateTimeOffset.UtcNow.AddHours(-2), DateTimeOffset.UtcNow.AddHours(-1));
+    wrongPurpose = Identity("Wrong purpose", mutualTls: false);
+    request = EnrollmentManager.CreateRequest(student, "Simulated device");
+    package = EnrollmentManager.CreatePackage(request, teacher, "school-1", "class-1", "Teacher",
+        TeacherRole.Teacher, ClassroomPermission.View | ClassroomPermission.Message | ClassroomPermission.Files,
+        DateTimeOffset.UtcNow.AddHours(2));
+    enrollment = Validate(package);
+}
+catch (Exception ex)
+{
+    foreach (var identity in identities) identity.Dispose();
+    CheckHarness.TryDelete(artifacts);
+    return CheckHarness.SetupFailed(ex);
+}
 try
 {
     await Check("enrollment round-trip contains public certificate only", () =>
@@ -226,11 +259,42 @@ try
     await CheckAsync("real TLS rejects substituted server", async () => Assert(!await TlsRoundTrip(rogue, teacher, student, teacher)));
     await CheckAsync("real TLS rejects substituted client", async () => Assert(!await TlsRoundTrip(student, rogue, student, teacher)));
     await CheckAsync("real TLS rejects missing client certificate", async () => Assert(!await TlsRoundTrip(student, null, student, teacher)));
-    Console.WriteLine($"PASS: {passed} headless enrollment/authorization/audit/TLS checks; no OS trust-store enrollment or visible windows.");
-    return 0;
+    await CheckAsync("harness reports setup failure with exit code instead of crashing", async () =>
+    {
+        var result = await CheckHarness.RunSelfTestAsync("setup-failure");
+        Assert(result.ExitCode == CheckHarness.ExitSetupFailed && result.Error.Contains("SETUP FAILED") && !result.Error.Contains("Unhandled exception"));
+    });
+    await CheckAsync("harness names failed check and still runs later checks", async () =>
+    {
+        var result = await CheckHarness.RunSelfTestAsync("failing-check");
+        Assert(result.ExitCode == CheckHarness.ExitChecksFailed && result.Error.Contains("FAIL: self-test failing check"));
+        Assert(result.Output.Contains("PASS: self-test later check still runs") && !result.Error.Contains("Unhandled exception"));
+    });
+    await CheckAsync("harness reports background exception with exit code", async () =>
+    {
+        var result = await CheckHarness.RunSelfTestAsync("background-exception");
+        Assert(result.ExitCode == CheckHarness.ExitUnexpectedFailure && result.Error.Contains("FATAL: unhandled exception") && result.Error.Contains("Simulated background failure"));
+    });
+    int exitCode = CheckHarness.Summarize(passed, failures, artifacts);
+    if (exitCode == 0) Console.WriteLine($"PASS: {passed} headless enrollment/authorization/audit/TLS checks; no OS trust-store enrollment or visible windows.");
+    return exitCode;
 }
-catch (Exception ex) { Console.Error.WriteLine(ex); return 1; }
+catch (Exception ex)
+{
+    Console.Error.WriteLine("FATAL: check run aborted" + Environment.NewLine + ex);
+    return CheckHarness.ExitUnexpectedFailure;
+}
+finally
+{
+    foreach (var identity in identities) identity.Dispose();
+}
 
+X509Certificate2 Identity(string name, DateTimeOffset? before = null, DateTimeOffset? after = null, bool mutualTls = true)
+{
+    var identity = Certificate(name, before, after, mutualTls);
+    identities.Add(identity);
+    return identity;
+}
 DeviceEnrollment Validate(EnrollmentPackage value) => EnrollmentManager.ValidatePackage(value, request.CertificateSha256, CertificateTrust.Fingerprint(teacher));
 LessonAuthorization Authorization() => new(enrollment, enrollment.Teacher.CertificateSha256);
 LessonRequest Lesson() => new(Guid.NewGuid().ToString("N"), "school-1", "class-1", DateTimeOffset.UtcNow.AddMinutes(20));
@@ -249,7 +313,15 @@ void Reject(Action action)
     throw new Exception("Expected security rejection");
 }
 Task Check(string name, Action action) => CheckAsync(name, () => { action(); return Task.CompletedTask; });
-async Task CheckAsync(string name, Func<Task> action) { await action(); passed++; Console.WriteLine("PASS: " + name); }
+async Task CheckAsync(string name, Func<Task> action)
+{
+    try { await action(); passed++; Console.WriteLine("PASS: " + name); }
+    catch (Exception ex)
+    {
+        failures.Add(name);
+        Console.Error.WriteLine("FAIL: " + name + Environment.NewLine + ex);
+    }
+}
 
 static X509Certificate2 Certificate(string name, DateTimeOffset? before = null, DateTimeOffset? after = null, bool mutualTls = true)
 {

@@ -13,6 +13,8 @@
 - [ ] Verify messages, approved file paths, session focus/policies and safe cleanup.
 - [ ] Implement opt-in recording with retention controls and audit.
 - [ ] Execute headless unit, integration, authorization and recovery tests.
+- [x] Make SecurityChecks report setup/check/background failures as exit codes without crash dialogs.
+- [ ] Apply the same crash-free reporting to ConsoleChecks, UpdateChecks, LoadProbe and ScreenStreaming.
 - [ ] Benchmark 10/20/30 simulated enrolled peers with measured resource/latency/throughput results.
 - [ ] Obtain independent review through actually available agents; disclose external tool limitations.
 - [ ] Create local teacher/agent installation packages and verify uninstall paths in isolated test directories.
