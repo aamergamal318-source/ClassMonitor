@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0] - 2026-11-01
+
+### Added
+- Background stable-release checks on every teacher and agent startup, with manual recheck and update notifications.
+- In-app package download, GitHub SHA-256 validation, exact component extraction, version validation and installation after explicit user action.
+- Separate updater waits for the running app, preserves settings and a previous executable, restarts the updated app, and rolls back immediate installation/startup failures.
+- Headless updater tests for metadata, integrity, offline behavior, staging, parent-process waiting, replacement and rollback.
+- Repeatable release packaging script and Arabic development roadmap based on the reference product's public guide and current source.
+
+### Changed
+- Visual capture tests now require explicit `--visual`; normal startup opens no capture-test fixture.
+- The reported black-screen issue on affected student machines remains under investigation.
+
 ## [1.0.1-diagnostics.1] - 2026-11-01
 
 ### Added

@@ -1,13 +1,15 @@
 # Screen streaming regression checks
 
-Run on Windows with the .NET 9 SDK.
+Run on Windows with the .NET 9 SDK. Every visible test requires explicit `--visual`;
+without it the program exits without opening a test window. Run these only when
+the operator has requested a visible desktop check.
 
 ```powershell
-dotnet run --project tests/ScreenStreaming -c Release -- --transport
-dotnet run --project tests/ScreenStreaming -c Release
-dotnet run --project tests/ScreenStreaming -c Release -- --end-to-end
-dotnet run --project tests/ScreenStreaming -c Release -- --published
-dotnet run --project tests/ScreenStreaming -c Release -- --diagnostics
+dotnet run --project tests/ScreenStreaming -c Release -- --visual --transport
+dotnet run --project tests/ScreenStreaming -c Release -- --visual
+dotnet run --project tests/ScreenStreaming -c Release -- --visual --end-to-end
+dotnet run --project tests/ScreenStreaming -c Release -- --visual --published
+dotnet run --project tests/ScreenStreaming -c Release -- --visual --diagnostics
 ```
 
 The transport check starts three authenticated TLS loopback connections, sends

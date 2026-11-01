@@ -15,6 +15,12 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        if (!args.Contains("--visual"))
+        {
+            Console.Error.WriteLine("Visible screen checks require explicit --visual. No test window was opened.");
+            Environment.ExitCode = 2;
+            return;
+        }
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);

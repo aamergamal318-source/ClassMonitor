@@ -11,6 +11,7 @@ internal sealed class AgentUi : ApplicationContext
 {
     private readonly Form _pump;      // hidden window that keeps a handle for marshaling
     private readonly NotifyIcon _tray;
+    private readonly ClassMonitor.Desktop.UpdateController _updates;
     private LockForm? _lock;
     private BroadcastForm? _broadcast;
     private ChatForm? _chat;
@@ -43,6 +44,8 @@ internal sealed class AgentUi : ApplicationContext
         menu.Opening += (_, _) => autostart.Checked = AgentInstaller.IsInstalled();
         menu.Items.Add(autostart);
         menu.Items.Add("Check screen capture... / فحص الشاشة", null, (_, _) => new CaptureDiagnostics().Show());
+        var updateItem = new ToolStripMenuItem("التحديثات / Updates");
+        menu.Items.Add(updateItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit", null, (_, _) => ExitThread());
 
@@ -58,6 +61,10 @@ internal sealed class AgentUi : ApplicationContext
             Text = "ClassMonitor Agent (classroom monitoring)",
             ContextMenuStrip = menu,
         };
+        _updates = new ClassMonitor.Desktop.UpdateController(ClassMonitor.Shared.Updates.UpdateComponent.Agent,
+            _pump, updateItem, ExitThread,
+            text => _tray.ShowBalloonTip(8000, "ClassMonitor update", text, ToolTipIcon.Info));
+        _ = _updates.CheckAtStartupAsync();
     }
 
     private void Post(Action action)
@@ -116,6 +123,7 @@ internal sealed class AgentUi : ApplicationContext
     {
         if (disposing)
         {
+            _updates.Dispose();
             _tray.Visible = false;
             _tray.Dispose();
             _lock?.CloseByProgram();

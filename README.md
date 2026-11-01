@@ -1,5 +1,15 @@
 # ClassMonitor
 
+## التحديثات وتطوير البرنامج
+
+بدءًا من 1.1.0 يفحص البرنامج أحدث إصدار مستقر على GitHub عند كل تشغيل، ويتيح تنزيله
+وتثبيته وإعادة التشغيل من داخل البرنامج. يظهر خيار التحديث أسفل نافذة المعلم وفي قائمة
+أيقونة الطالب. تحتاج النسخ الأقدم استبدالًا يدويًا مرة واحدة لتفعيل هذه الميزة.
+راجع [دليل التحديث](UPDATE-GUIDE.md) و[خطة التطوير نحو إدارة صف متكاملة](DEVELOPMENT-PLAN.md).
+
+From 1.1.0, both apps check stable GitHub releases at startup and offer verified in-app
+installation and restart. Earlier versions require one initial manual upgrade.
+
 ## مفتوح المصدر · Open source
 
 المشروع متاح بترخيص [MIT](LICENSE): يمكنك تنزيل المصدر واستخدامه وتعديله وإعادة توزيعه وفق شروط الترخيص.

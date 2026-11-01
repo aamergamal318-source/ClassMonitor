@@ -36,6 +36,7 @@ internal sealed class MainForm : Form
     private readonly ToolStripComboBox _refreshCombo;
     private readonly ToolStripStatusLabel _status;
     private readonly ToolStripStatusLabel _selStatus;
+    private readonly ClassMonitor.Desktop.UpdateController _updates;
     private readonly System.Windows.Forms.Timer _broadcastTimer = new() { Interval = 250 };
     private readonly System.Windows.Forms.Timer _studentBroadcastTimer = new() { Interval = 250 };
     private readonly System.Windows.Forms.Timer _activityTimer = new() { Interval = 4000 };
@@ -195,6 +196,11 @@ internal sealed class MainForm : Form
         _selStatus = new ToolStripStatusLabel("0 selected");
         statusStrip.Items.Add(_status);
         statusStrip.Items.Add(_selStatus);
+        var updates = new ToolStripButton("التحديثات / Updates");
+        statusStrip.Items.Add(updates);
+        _updates = new ClassMonitor.Desktop.UpdateController(ClassMonitor.Shared.Updates.UpdateComponent.Teacher,
+            this, updates, Close);
+        Shown += async (_, _) => await _updates.CheckAtStartupAsync();
 
         Controls.Add(_grid);
         Controls.Add(BuildGroupsPanel());
@@ -1006,6 +1012,7 @@ internal sealed class MainForm : Form
 
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
+        _updates.Dispose();
         _broadcastTimer.Stop();
         _studentBroadcastTimer.Stop();
         _activityTimer.Stop();

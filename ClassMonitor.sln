@@ -11,6 +11,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ClassMonitor.Agent", "src\C
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ClassMonitor.Teacher", "src\ClassMonitor.Teacher\ClassMonitor.Teacher.csproj", "{073155CF-CF80-41C8-ACEA-BAA9A481BAE9}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ClassMonitor.Updater", "src\ClassMonitor.Updater\ClassMonitor.Updater.csproj", "{A47C39DC-00F4-43A3-B505-B34435EFFE99}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -57,6 +59,18 @@ Global
 		{073155CF-CF80-41C8-ACEA-BAA9A481BAE9}.Release|x64.Build.0 = Release|Any CPU
 		{073155CF-CF80-41C8-ACEA-BAA9A481BAE9}.Release|x86.ActiveCfg = Release|Any CPU
 		{073155CF-CF80-41C8-ACEA-BAA9A481BAE9}.Release|x86.Build.0 = Release|Any CPU
+		{A47C39DC-00F4-43A3-B505-B34435EFFE99}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A47C39DC-00F4-43A3-B505-B34435EFFE99}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A47C39DC-00F4-43A3-B505-B34435EFFE99}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{A47C39DC-00F4-43A3-B505-B34435EFFE99}.Debug|x64.Build.0 = Debug|Any CPU
+		{A47C39DC-00F4-43A3-B505-B34435EFFE99}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{A47C39DC-00F4-43A3-B505-B34435EFFE99}.Debug|x86.Build.0 = Debug|Any CPU
+		{A47C39DC-00F4-43A3-B505-B34435EFFE99}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A47C39DC-00F4-43A3-B505-B34435EFFE99}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A47C39DC-00F4-43A3-B505-B34435EFFE99}.Release|x64.ActiveCfg = Release|Any CPU
+		{A47C39DC-00F4-43A3-B505-B34435EFFE99}.Release|x64.Build.0 = Release|Any CPU
+		{A47C39DC-00F4-43A3-B505-B34435EFFE99}.Release|x86.ActiveCfg = Release|Any CPU
+		{A47C39DC-00F4-43A3-B505-B34435EFFE99}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -65,5 +79,6 @@ Global
 		{D650ADF3-C364-4E7E-BEF8-3CC60BC2604D} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{DA74ABE5-D834-40BF-86A8-6C21A063E890} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{073155CF-CF80-41C8-ACEA-BAA9A481BAE9} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{A47C39DC-00F4-43A3-B505-B34435EFFE99} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 	EndGlobalSection
 EndGlobal
