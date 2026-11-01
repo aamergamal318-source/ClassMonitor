@@ -9,6 +9,12 @@ internal static class Program
     {
         ApplicationConfiguration.Initialize();
 
+        if (args.Length > 0 && args[0].Equals("--diagnose", StringComparison.OrdinalIgnoreCase))
+        {
+            Application.Run(new CaptureDiagnostics());
+            return;
+        }
+
         // Install/uninstall/status verbs: do the action and exit (no agent UI).
         if (args.Length > 0 && args[0].StartsWith("--", StringComparison.Ordinal))
         {

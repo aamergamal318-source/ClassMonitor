@@ -14,6 +14,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\ClassMonitor.Shared\ClassMonitor.Shared.csproj" />
+    <InternalsVisibleTo Include="ScreenStreaming" />
   </ItemGroup>
 
   <ItemGroup>

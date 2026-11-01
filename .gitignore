@@ -19,3 +19,4 @@ teacher.json
 dist/agent/
 dist/teacher/
 release/
+tests/**/artifacts/

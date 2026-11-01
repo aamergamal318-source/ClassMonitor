@@ -42,6 +42,7 @@ internal sealed class AgentUi : ApplicationContext
         };
         menu.Opening += (_, _) => autostart.Checked = AgentInstaller.IsInstalled();
         menu.Items.Add(autostart);
+        menu.Items.Add("Check screen capture... / فحص الشاشة", null, (_, _) => new CaptureDiagnostics().Show());
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit", null, (_, _) => ExitThread());
 

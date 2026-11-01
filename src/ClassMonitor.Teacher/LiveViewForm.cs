@@ -38,6 +38,9 @@ internal sealed class LiveViewForm : Form
         _monitorCombo = new ToolStripComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 130 };
         _monitorCombo.SelectedIndexChanged += (_, _) => OnMonitorChanged();
         tools.Items.Add(_monitorCombo);
+        var diagnostics = new ToolStripButton("Copy diagnostics / نسخ التشخيص");
+        diagnostics.Click += (_, _) => Clipboard.SetText(BuildDiagnostics());
+        tools.Items.Add(diagnostics);
 
         _pic = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black };
         _pic.MouseMove += OnMouseMove;
@@ -83,6 +86,37 @@ internal sealed class LiveViewForm : Form
 
     private Task RequestAsync() =>
         _conn.RequestScreenAsync(maxWidth: 1280, quality: 60, intervalMs: 200, monitorIndex: _monitorIndex);
+
+    internal string BuildDiagnostics()
+    {
+        var text = new System.Text.StringBuilder();
+        text.AppendLine("ClassMonitor teacher receive diagnostic v1");
+        text.AppendLine($"Frames received: {_conn.FramesReceived}; monitor selected: {_monitorIndex}");
+        text.AppendLine($"Last frame UTC: {_conn.LastFrameAt:O}; JPEG bytes: {_conn.LastFrame?.Length ?? 0}");
+        text.AppendLine($"Last receive error: {_conn.LastReadError}");
+        text.AppendLine($"Monitors reported: {_conn.Monitors.Length}");
+        byte[]? jpeg = _conn.LastFrame;
+        if (jpeg is not null)
+        {
+            try
+            {
+                using var stream = new MemoryStream(jpeg);
+                using var bitmap = new Bitmap(stream);
+                int dark = 0, total = 0;
+                for (int y = 0; y < bitmap.Height; y += 4)
+                for (int x = 0; x < bitmap.Width; x += 4)
+                {
+                    var c = bitmap.GetPixel(x, y);
+                    total++;
+                    if (c.R < 16 && c.G < 16 && c.B < 16) dark++;
+                }
+                text.AppendLine($"Decoded image: {bitmap.Width}x{bitmap.Height}; near-black pixels: {100.0 * dark / Math.Max(1, total):F1}%");
+                text.AppendLine($"Image assigned to view: {_pic.Image is not null}");
+            }
+            catch (Exception ex) { text.AppendLine($"JPEG decoding FAILED: {ex.GetType().Name}: {ex.Message}"); }
+        }
+        return text.ToString();
+    }
 
     private void OnFrame(AgentConnection c, byte[] jpeg)
     {

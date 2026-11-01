@@ -24,6 +24,9 @@ internal sealed class AgentConnection : IDisposable
     public string UserName { get; private set; } = "";
     public MonitorInfo[] Monitors { get; private set; } = Array.Empty<MonitorInfo>();
     public byte[]? LastFrame { get; private set; }
+    public DateTime LastFrameAt { get; private set; } = DateTime.MinValue;
+    public long FramesReceived { get; private set; }
+    public string LastReadError { get; private set; } = "";
     public ActivityMsg? LastActivity { get; private set; }
     public DateTime LastActivityAt { get; private set; } = DateTime.MinValue;
 
@@ -119,6 +122,8 @@ internal sealed class AgentConnection : IDisposable
 
                     case MsgType.ScreenFrame:
                         LastFrame = payload;
+                        LastFrameAt = DateTime.UtcNow;
+                        FramesReceived++;
                         FrameReceived?.Invoke(this, payload);
                         break;
 
@@ -144,7 +149,11 @@ internal sealed class AgentConnection : IDisposable
                 }
             }
         }
-        catch { /* dropped */ }
+        catch (Exception ex)
+        {
+            if (!ct.IsCancellationRequested)
+                LastReadError = $"{ex.GetType().Name}: {ex.Message}";
+        }
         finally { Disconnected?.Invoke(this); }
     }
 
