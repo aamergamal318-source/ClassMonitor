@@ -1,0 +1,21 @@
+bin/
+obj/
+*.user
+.vs/
+
+# Local credentials, configuration, and recordings
+.env
+.env.*
+!.env.example
+*.pfx
+*.p12
+*.key
+agent.json
+teacher.json
+*.avi
+*.log
+
+# Compiled downloads belong in GitHub Releases
+dist/agent/
+dist/teacher/
+release/
