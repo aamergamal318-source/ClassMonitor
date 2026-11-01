@@ -16,7 +16,8 @@ public static class CertificateTrust
     {
         if (certificate is null || !IsFingerprint(expectedFingerprint)) return false;
         var instant = (now ?? DateTimeOffset.UtcNow).UtcDateTime;
-        if (instant < certificate.NotBefore.ToUniversalTime() || instant > certificate.NotAfter.ToUniversalTime()) return false;
+        if (instant < certificate.NotBefore.ToUniversalTime() || instant > certificate.NotAfter.ToUniversalTime()
+            || !SupportsMutualTls(certificate)) return false;
         byte[] expected = Convert.FromHexString(expectedFingerprint!);
         byte[] actual = SHA256.HashData(certificate.RawData);
         return CryptographicOperations.FixedTimeEquals(expected, actual);

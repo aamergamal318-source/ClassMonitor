@@ -77,11 +77,13 @@ public static class EnrollmentManager
         if (payload.SchemaVersion != SchemaVersion || payload.Device is null || payload.Teacher is null)
             throw new InvalidDataException("enrollment.schema.invalid");
         ValidateRequest(payload.Device); ValidateGrant(payload.Teacher);
+        using var deviceIdentity = CertificateTrust.ReadPublicCertificate(payload.Device.PublicCertificateBase64);
         ValidateIdentifier(payload.SchoolId); ValidateIdentifier(payload.ClassroomId);
         var now = DateTimeOffset.UtcNow;
         if (payload.IssuedAtUtc > now.AddMinutes(5) || payload.ExpiresAtUtc <= now
             || payload.ExpiresAtUtc <= payload.IssuedAtUtc || payload.ExpiresAtUtc > payload.Teacher.ExpiresAtUtc
-            || payload.ExpiresAtUtc > teacher.NotAfter.ToUniversalTime()) throw new AuthenticationException("enrollment.expired");
+            || payload.ExpiresAtUtc > teacher.NotAfter.ToUniversalTime()
+            || payload.ExpiresAtUtc > deviceIdentity.NotAfter.ToUniversalTime()) throw new AuthenticationException("enrollment.expired");
         if (!PinsEqual(payload.Device.CertificateSha256, expectedDeviceFingerprint)
             || !PinsEqual(payload.Teacher.CertificateSha256, expectedTeacherFingerprint)
             || payload.Teacher.SchoolId != payload.SchoolId || !payload.Teacher.ClassroomIds.Contains(payload.ClassroomId, StringComparer.Ordinal))
@@ -102,6 +104,8 @@ public static class EnrollmentManager
         if (enrollment.Teacher.SchoolId != enrollment.SchoolId || !enrollment.Teacher.ClassroomIds.Contains(enrollment.ClassroomId, StringComparer.Ordinal))
             throw new AuthenticationException("enrollment.scope.mismatch");
         if (enrollment.ExpiresAtUtc > enrollment.Teacher.ExpiresAtUtc) throw new InvalidDataException("enrollment.expiration.invalid");
+        if (enrollment.ExpiresAtUtc <= DateTimeOffset.UtcNow || enrollment.Teacher.ExpiresAtUtc <= DateTimeOffset.UtcNow)
+            throw new AuthenticationException("enrollment.expired");
     }
 
     public static bool IsStrongPairingSecret(string? value)
