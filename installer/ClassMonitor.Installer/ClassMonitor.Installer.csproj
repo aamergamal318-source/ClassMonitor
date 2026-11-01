@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType><TargetFramework>net9.0-windows</TargetFramework><UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><AssemblyName>ClassMonitorSetup</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Core/Uninstall.ps1" LogicalName="ClassMonitor.Uninstall.ps1" />
+    <EmbeddedResource Include="$(PayloadPath)" LogicalName="ClassMonitor.Payload.zip" Condition="'$(PayloadPath)' != '' and Exists('$(PayloadPath)')" />
+  </ItemGroup>
+</Project>
