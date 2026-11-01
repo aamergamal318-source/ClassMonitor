@@ -14,12 +14,32 @@ public static class SchoolSettingsStore
         if (new FileInfo(path).Length > MaximumProfileBytes) throw new InvalidDataException("Settings profile is too large.");
         try
         {
-            var settings = JsonSerializer.Deserialize<SchoolSettings>(File.ReadAllText(path), Options)
+            string json = File.ReadAllText(path);
+            using var document = JsonDocument.Parse(json);
+            if (document.RootElement.ValueKind != JsonValueKind.Object || !document.RootElement.TryGetProperty("SchemaVersion", out _))
+                throw new InvalidDataException("This file is not a versioned ClassMonitor preferences profile.");
+            RejectDuplicateProperties(document.RootElement);
+            var settings = JsonSerializer.Deserialize<SchoolSettings>(json, Options)
                 ?? throw new InvalidDataException("Settings profile cannot be null.");
             settings.EnsureValid();
             return settings;
         }
         catch (JsonException ex) { throw new InvalidDataException("Settings profile contains invalid JSON; it was not reset.", ex); }
+    }
+
+    private static void RejectDuplicateProperties(JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var property in element.EnumerateObject())
+            {
+                if (!names.Add(property.Name)) throw new InvalidDataException("Settings profile contains duplicate properties.");
+                RejectDuplicateProperties(property.Value);
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+            foreach (var child in element.EnumerateArray()) RejectDuplicateProperties(child);
     }
 
     public static void SaveAtomic(string path, SchoolSettings settings)

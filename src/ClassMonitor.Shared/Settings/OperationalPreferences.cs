@@ -77,6 +77,7 @@ public static class ApprovedFilePaths
         string[] segments = relativePath.Replace('\\', '/').Split('/');
         if (segments.Any(s => string.IsNullOrWhiteSpace(s) || s is "." or ".." || s.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || s.TrimEnd(' ', '.') != s))
             throw new InvalidDataException("Invalid lesson path.");
+        if (segments.Any(IsReservedName)) throw new InvalidDataException("Reserved Windows device names are not lesson files.");
         string root = Path.GetFullPath(approvedDirectory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         string target = Path.GetFullPath(Path.Combine(root, Path.Combine(segments)));
         if (!target.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
@@ -87,6 +88,14 @@ public static class ApprovedFilePaths
                 throw new InvalidDataException("Lesson paths cannot traverse a symbolic link or junction.");
         }
         return target;
+    }
+
+    private static bool IsReservedName(string segment)
+    {
+        string stem = segment.Split('.')[0].ToUpperInvariant();
+        return stem is "CON" or "PRN" or "AUX" or "NUL" or "CONIN$" or "CONOUT$"
+            || (stem.Length == 4 && (stem.StartsWith("COM", StringComparison.Ordinal) || stem.StartsWith("LPT", StringComparison.Ordinal))
+                && "123456789¹²³".Contains(stem[3]));
     }
 
     public static void CheckLength(long bytes, FileSettings settings)
@@ -101,6 +110,7 @@ public static class RecordingRetention
     public static IReadOnlyList<string> FindExpired(string directory, int retentionDays, DateTimeOffset now)
     {
         if (retentionDays < 1 || retentionDays > 365) throw new ArgumentOutOfRangeException(nameof(retentionDays));
+        _ = ApprovedFilePaths.ResolveFileName(directory, "classmonitor-retention-check.tmp");
         if (!Directory.Exists(directory)) return Array.Empty<string>();
         return Directory.EnumerateFiles(directory, OwnedPattern, SearchOption.TopDirectoryOnly)
             .Where(path => (File.GetAttributes(path) & FileAttributes.ReparsePoint) == 0
@@ -112,9 +122,12 @@ public static class RecordingRetention
         foreach (string path in files) File.Delete(path);
         return files.Count;
     }
-    public static long OwnedStorageBytes(string directory) => !Directory.Exists(directory) ? 0 :
-        Directory.EnumerateFiles(directory, OwnedPattern, SearchOption.TopDirectoryOnly)
+    public static long OwnedStorageBytes(string directory)
+    {
+        _ = ApprovedFilePaths.ResolveFileName(directory, "classmonitor-retention-check.tmp");
+        return !Directory.Exists(directory) ? 0 : Directory.EnumerateFiles(directory, OwnedPattern, SearchOption.TopDirectoryOnly)
             .Where(path => (File.GetAttributes(path) & FileAttributes.ReparsePoint) == 0).Sum(path => new FileInfo(path).Length);
+    }
 }
 
 public sealed record DeviceSearchEntry(string DeviceId, string DisplayName, string Classroom, string Status);
@@ -126,6 +139,6 @@ public static class DashboardQuery
         if (string.IsNullOrWhiteSpace(text)) return true;
         return text.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .All(term => new[] { device.DeviceId, device.DisplayName, device.Classroom, device.Status }
-                .Any(value => value.Contains(term, StringComparison.OrdinalIgnoreCase)));
+                .Any(value => (value ?? "").Contains(term, StringComparison.OrdinalIgnoreCase)));
     }
 }
