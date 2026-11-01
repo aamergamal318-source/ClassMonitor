@@ -1,0 +1,20 @@
+# Engineering tasks
+
+- [x] Read attached scope; preserve repository, history and MIT license.
+- [x] Validate external agent capabilities and report limitations.
+- [x] Research official product guides and evaluate runtime/UI/transport choices.
+- [x] Record initial architecture and threat decisions before implementation.
+- [ ] Audit current features with source/test evidence; complete traceability matrix.
+- [ ] Install workspace-local supported .NET SDK and keep baseline build reproducible.
+- [ ] Implement explicit enrollment, mutual TLS pins, classroom grants and bounded authorized lessons.
+- [ ] Gate every capture/control/command operation; add visible session/control/recording state.
+- [ ] Integrate validated persistent settings, Arabic/Hebrew/English, theme and modern dashboard.
+- [ ] Verify classroom groups, health/presence, reconnection and bounded stream requests.
+- [ ] Verify messages, approved file paths, session focus/policies and safe cleanup.
+- [ ] Implement opt-in recording with retention controls and audit.
+- [ ] Execute headless unit, integration, authorization and recovery tests.
+- [ ] Benchmark 10/20/30 simulated enrolled peers with measured resource/latency/throughput results.
+- [ ] Obtain independent review through actually available agents; disclose external tool limitations.
+- [ ] Create local teacher/agent installation packages and verify uninstall paths in isolated test directories.
+- [ ] Update progress, feature/settings matrix, deployment/privacy/security/contribution guidance.
+- [ ] Obtain explicit approval before public release or real-device deployment.

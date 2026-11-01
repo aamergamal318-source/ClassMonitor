@@ -20,3 +20,7 @@ dist/agent/
 dist/teacher/
 release/
 tests/**/artifacts/
+.worktrees/
+.tools/
+*.enrollment.json
+*.enrollment-request.json
