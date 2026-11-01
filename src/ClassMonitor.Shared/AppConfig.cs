@@ -1,4 +1,8 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Security.Cryptography;
+using ClassMonitor.Shared.Settings;
+using ClassMonitor.Shared.Sessions;
 
 namespace ClassMonitor.Shared;
 
@@ -10,7 +14,7 @@ namespace ClassMonitor.Shared;
 public sealed class AppConfig
 {
     /// <summary>Class password — the shared secret both ends must know to connect.</summary>
-    public string Password { get; set; } = "classmonitor";
+    public string Password { get; set; } = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
 
     /// <summary>TCP port the agent listens on / the teacher connects to.</summary>
     public int Port { get; set; } = Net.AgentTcpPort;
@@ -20,6 +24,10 @@ public sealed class AppConfig
 
     /// <summary>Teacher-side hosts that should be connected manually even when UDP discovery is unavailable.</summary>
     public List<string> ManualHosts { get; set; } = new();
+    public SchoolSettings Settings { get; set; } = new();
+    public List<PairedDevice> PairedDevices { get; set; } = new();
+    public int SchemaVersion { get; set; } = 2;
+    [JsonExtensionData] public Dictionary<string, JsonElement>? AdditionalProperties { get; set; }
 
     private static readonly JsonSerializerOptions Opts = new() { WriteIndented = true };
 
@@ -37,18 +45,54 @@ public sealed class AppConfig
         try
         {
             if (File.Exists(path))
-                return JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(path)) ?? new AppConfig();
+            {
+                string json = File.ReadAllText(path);
+                var result = JsonSerializer.Deserialize<AppConfig>(json)
+                    ?? throw new InvalidDataException("Configuration is empty.");
+                using var document = JsonDocument.Parse(json);
+                if (!document.RootElement.TryGetProperty(nameof(Settings), out _))
+                    result.Settings.Network.AgentPort = result.Port;
+                result.Validate();
+                return result;
+            }
         }
-        catch { /* corrupt file -> fall back to defaults */ }
+        catch (JsonException ex) { throw new InvalidDataException("Configuration is invalid. The original file was preserved; restore its .previous backup or repair it.", ex); }
 
         var cfg = new AppConfig();
-        try { cfg.Save(path); } catch { /* read-only location; ignore */ }
+        try { cfg.Save(path); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* No trust is granted from unsaved defaults. */ }
         return cfg;
     }
 
     public void Save(string path)
     {
+        Validate();
+        path = Path.GetFullPath(path);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        File.WriteAllText(path, JsonSerializer.Serialize(this, Opts));
+        string temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            File.WriteAllText(temporary, JsonSerializer.Serialize(this, Opts));
+            if (File.Exists(path)) File.Copy(path, path + ".previous", true);
+            File.Move(temporary, path, true);
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+    }
+
+    public void Validate()
+    {
+        if (Port is < 1024 or > 65535) throw new InvalidDataException("Agent port must be between 1024 and 65535.");
+        if (Settings is null || ManualHosts is null || PairedDevices is null) throw new InvalidDataException("Configuration collections cannot be null.");
+        Settings.EnsureValid();
+        if (PairedDevices.Count > 500 || ManualHosts.Count > 500) throw new InvalidDataException("Too many saved devices.");
+        var savedHosts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var peer in PairedDevices)
+        {
+            if (peer is null || string.IsNullOrWhiteSpace(peer.Host) || peer.Port is < 1024 or > 65535 || !savedHosts.Add(peer.Host))
+                throw new InvalidDataException("Invalid paired device address.");
+            ClassMonitor.Shared.Management.EnrollmentManager.ValidateEnrollment(peer.Enrollment);
+            using var certificate = ClassMonitor.Shared.Management.CertificateTrust.ReadPublicCertificate(peer.PublicCertificateBase64);
+            if (!ClassMonitor.Shared.Management.CertificateTrust.Matches(certificate, peer.Enrollment.DeviceCertificateSha256))
+                throw new InvalidDataException("Paired device certificate does not match its enrollment.");
+        }
     }
 }

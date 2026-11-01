@@ -44,7 +44,7 @@ if (args.Length == 1 && args[0] == "--live-check")
 }
 
 string workerExecutable = args.Length == 2 && args[0] == "--worker" ? Path.GetFullPath(args[1])
-    : Path.GetFullPath("src/ClassMonitor.Updater/bin/Release/net9.0/ClassMonitorUpdater.exe");
+    : Path.GetFullPath("src/ClassMonitor.Updater/bin/Release/net10.0/ClassMonitorUpdater.exe");
 
 string root = Path.GetFullPath(Path.Combine("tests", "UpdateChecks", "artifacts", Guid.NewGuid().ToString("N")));
 Directory.CreateDirectory(root);
@@ -265,12 +265,12 @@ byte[] Package(bool duplicate = false)
     {
         foreach (var item in new[]
         {
-            ("ClassMonitor/teacher/ClassMonitorTeacher.exe", "src/ClassMonitor.Teacher/bin/Release/net9.0-windows/ClassMonitorTeacher.exe"),
-            ("ClassMonitor/agent/ClassMonitorAgent.exe", "src/ClassMonitor.Agent/bin/Release/net9.0-windows/ClassMonitorAgent.exe"),
-            ("ClassMonitor/updater/ClassMonitorUpdater.exe", "src/ClassMonitor.Updater/bin/Release/net9.0/ClassMonitorUpdater.exe")
+            ("ClassMonitor/teacher/ClassMonitorTeacher.exe", "src/ClassMonitor.Teacher/bin/Release/net10.0-windows/ClassMonitorTeacher.exe"),
+            ("ClassMonitor/agent/ClassMonitorAgent.exe", "src/ClassMonitor.Agent/bin/Release/net10.0-windows/ClassMonitorAgent.exe"),
+            ("ClassMonitor/updater/ClassMonitorUpdater.exe", "src/ClassMonitor.Updater/bin/Release/net10.0/ClassMonitorUpdater.exe")
         }) zip.CreateEntryFromFile(item.Item2, item.Item1);
         using (var writer = new StreamWriter(zip.CreateEntry("../../escape.txt").Open())) writer.Write("must not extract");
-        if (duplicate) zip.CreateEntryFromFile("src/ClassMonitor.Teacher/bin/Release/net9.0-windows/ClassMonitorTeacher.exe", "ClassMonitor/teacher/ClassMonitorTeacher.exe");
+        if (duplicate) zip.CreateEntryFromFile("src/ClassMonitor.Teacher/bin/Release/net10.0-windows/ClassMonitorTeacher.exe", "ClassMonitor/teacher/ClassMonitorTeacher.exe");
     }
     return bytes.ToArray();
 }

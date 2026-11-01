@@ -42,6 +42,15 @@ public enum MsgType : byte
     // --- advanced monitoring ---
     MonitorsInfo = 60,  // agent -> teacher : MonitorsMsg (the student's display layout)
     Activity = 61,      // agent -> teacher : ActivityMsg (foreground window/app, periodic)
+    LessonStart = 64,
+    LessonEnd = 65,
+    AssistanceState = 66,
+    RecordingState = 67,
+    StateResult = 68,
+    HealthPing = 69,
+    SessionHealth = 70,
+    Question = 71,
+    Answer = 72,
 
     // --- authentication handshake (sent over TLS, before any command) ---
     AuthHello = 100,    // agent  -> teacher : AuthHello (server nonce)
@@ -138,14 +147,15 @@ public static class Frame
         => WriteAsync(s, type, JsonSerializer.SerializeToUtf8Bytes(value, JsonOpts), ct);
 
     /// <summary>Reads one full message. Returns null on a clean end-of-stream.</summary>
-    public static async Task<(MsgType Type, byte[] Payload)?> ReadAsync(Stream s, CancellationToken ct = default)
+    public static async Task<(MsgType Type, byte[] Payload)?> ReadAsync(Stream s, CancellationToken ct = default, int maximumBytes = Net.MaxMessageBytes)
     {
+        if (maximumBytes is < 1 or > Net.MaxMessageBytes) throw new ArgumentOutOfRangeException(nameof(maximumBytes));
         var header = new byte[5];
         if (!await ReadExactAsync(s, header, ct).ConfigureAwait(false))
             return null;
 
         int len = BinaryPrimitives.ReadInt32BigEndian(header);
-        if (len < 1 || len > Net.MaxMessageBytes)
+        if (len < 1 || len > maximumBytes)
             throw new InvalidDataException($"Bad frame length: {len}");
 
         var type = (MsgType)header[4];
