@@ -129,7 +129,7 @@ try
     {
         string program = Path.Combine(root, "ClassMonitorAgent.exe");
         string[] agent = InstallerCore.FirewallAddArguments(InstallComponent.Agent, program, "student");
-        Assert(agent.Contains("protocol=TCP") && agent.Contains("localport=5900") && agent.Contains("program=" + program) && agent.Contains("name=ClassMonitor Student (student)"));
+        Assert(agent.Contains("protocol=TCP") && agent.Contains("localport=5900,5902") && agent.Contains("program=" + program) && agent.Contains("name=ClassMonitor Student (student)"));
         Assert(agent.Contains("profile=domain,private") && agent.Contains("remoteip=localsubnet") && !agent.Any(a => a.Contains("public")));
         string[] teacher = InstallerCore.FirewallAddArguments(InstallComponent.Teacher, program, "teacher");
         Assert(teacher.Contains("protocol=UDP") && teacher.Contains("localport=5901"));

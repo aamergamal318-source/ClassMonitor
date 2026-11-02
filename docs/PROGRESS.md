@@ -44,4 +44,7 @@ Not executed, and therefore still release gates:
 - Real screen capture through the new session on affected student computers, the ScreenStreaming visual fixtures (they require `--visual`), multi-monitor, RDP, fast user switching, and physical 30-device use. The black-screen report remains unconfirmed.
 - Human review of Arabic and Hebrew, accessibility on real hardware, and code signing.
 
+## Adding computers with a password, 2026-11-02
+Owner's request: a password when installing a student computer, and a teacher console that shows only computers added with that password. Implemented on TCP 5902 with a salted hash and proofs bound to both certificates. See ENROLLMENT for the security trade-offs. Executed: IntegrationChecks 48 (also 6 clean runs in a row), and the mutation proof on a scratch copy: the unmodified code passed, then 22 guards removed one at a time were each detected. Also `IntegrationChecks --live-agent`: the real agent program on this computer was added with a generated password, a lesson started, real screen frames decoded at 960x270 in memory, and frames stopped when the lesson ended. That ran over loopback, not between two computers. This work found and fixed a student's end-of-session notice that could be lost.
+
 Only replace these statuses with executed evidence. Record exact test commands/results and remaining release gates after integration.

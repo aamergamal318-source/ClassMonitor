@@ -22,29 +22,28 @@ Keep a trusted copy where students cannot change it, such as the administrator's
 1) جهاز المعلم: شغّل ClassMonitorSetup.exe واختر Teacher console.
    Teacher computer: run ClassMonitorSetup.exe and choose Teacher console.
 
-2) جهاز الطالب: شغّل ClassMonitorSetup.exe بحساب الطالب واختر Student agent.
-   للأجهزة المشتركة: كرّر الخطوتين 2 و3 لكل حساب Windows.
-   Student computer: run it under the student's account and choose Student agent.
-   Shared computers: repeat steps 2 and 3 for each Windows account.
-   الخياران (يعملان فقط إذا فعّلتهما) · Options, only if you tick them:
-   - التشغيل عند تسجيل الدخول · Start when I sign in
-   - السماح عبر جدار الحماية (يطلب صلاحية مسؤول) · Allow through Windows Firewall (asks for an administrator)
+2) جهاز الطالب: شغّل ClassMonitorSetup.exe بحساب الطالب واختر Student agent، ثم اختر كلمة مرور
+   للجهاز (8 أحرف على الأقل). اختر كلمة قوية ولا تخبر بها الطلاب. وافق على طلب المسؤول لجدار الحماية.
+   للأجهزة المشتركة: كرّر هذه الخطوة لكل حساب Windows.
+   Student computer: run it under the student's account, choose Student agent and set a computer password
+   (at least 8 characters). Use a strong one and do not tell students. Accept the administrator prompt for the firewall.
+   Shared computers: repeat this for each Windows account.
 
-3) التسجيل · Enrollment
-   أ) الطالب: من أيقونة البرنامج اختر Export enrollment request وأعطِ الملف للمعلم.
-      Student: from the tray icon choose Export enrollment request and give the file to the teacher.
-   ب) المعلم: اضغط Enroll device، واختر الملف، وحدد الصف والصلاحيات، ثم احفظ ملف التسجيل.
-      Teacher: use Enroll device, choose the file, set the classroom and permissions, save the enrollment file.
-   ج) المسؤول: على جهاز الطالب شغّل نسختك الموثوقة من ClassMonitorSetup.exe، واختر
-      Import enrollment file، وقارن البصمتين قبل الموافقة.
-      Administrator: on the student computer run your trusted copy of ClassMonitorSetup.exe, choose
-      Import enrollment file, and compare both fingerprints before accepting.
-   ملف التسجيل حساس: انقله بطريقة معتمدة واحذف نسخه بعد الاستيراد.
-   The enrollment file is sensitive: move it by an approved channel and delete copies afterwards.
+3) على جهاز المعلم: اضغط Add computer، واكتب اسم الجهاز أو عنوان IP وكلمة المرور والصف.
+   لوحة المعلم تعرض فقط الأجهزة التي أضفتها.
+   On the teacher computer: use Add computer and enter the computer's name or IP address, its password and the classroom.
+   The console shows only computers you added.
 
 4) الدرس · Lesson
    المعلم يضغط Start lesson. لا يُرى أي شيء ولا يُنفَّذ أي أمر قبل بدء الدرس، وكل شيء يتوقف عند نهايته.
    The teacher uses Start lesson. Nothing is viewed or controlled before a lesson, and everything stops when it ends.
+
+لأوامر الإيقاف وتشغيل البرامج · For power and program commands
+-------------------------------------------------------------
+لا تمنح كلمة المرور هذه الصلاحيات. يستخدم المسؤول مسار ملف التسجيل: Export enrollment request على جهاز الطالب،
+ثم Enroll device في إعدادات المعلم، ثم Import enrollment file في المثبّت.
+The password does not grant these. An administrator uses the enrollment file path: Export enrollment request on the
+student computer, Enroll device in the teacher's settings, then Import enrollment file in setup.
 
 التحديث · Updates
 -----------------
@@ -53,8 +52,8 @@ Updates come from inside the program. You do not need to run setup again.
 
 الترقية من الإصدارات الأقدم · Upgrading from earlier versions
 -------------------------------------------------------------
-كلمة المرور المشتركة لم تعد مستخدمة. يجب تسجيل كل جهاز طالب مرة واحدة كما في الخطوة 3.
-The shared password is no longer used. Every student computer must be enrolled once, as in step 3.
+كلمة المرور القديمة المشتركة لم تعد مستخدمة. ثبّت بالمثبّت الجديد على كل جهاز طالب وأضفه كما في الخطوتين 2 و3.
+The old shared password is no longer used. Run the new setup on each student computer and add it, as in steps 2 and 3.
 
 قيود المواقع والإنترنت · Website and internet restrictions
 ----------------------------------------------------------
@@ -67,6 +66,6 @@ If blocks remain after a sudden interruption, use Remove leftover restrictions i
 
 الشبكة · Network
 ----------------
-- TCP 5900 يدخل إلى جهاز الطالب · inbound on the student computer
+- TCP 5900 و 5902 يدخلان إلى جهاز الطالب · inbound on the student computer
 - UDP 5901 يدخل إلى جهاز المعلم للاكتشاف · inbound on the teacher computer, for discovery
 يجب أن يكون المعلم والطلاب على نفس الشبكة المحلية. · Teacher and students must share a local network.

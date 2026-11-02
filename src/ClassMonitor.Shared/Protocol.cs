@@ -55,6 +55,9 @@ public enum MsgType : byte
     SessionEnded = 74,  // agent -> teacher : SessionEndNotice (why the agent closed the session)
     StudentShared = 75, // teacher -> agent : StateRequest (this screen is being shown to the class)
 
+    // --- adding a computer with its password (separate pairing port, before any trust exists) ---
+    PairHello = 80, PairChallenge = 81, PairProof = 82, PairAccepted = 83, PairEnrollment = 84, PairResult = 85,
+
     // --- authentication handshake (sent over TLS, before any command) ---
     AuthHello = 100,    // agent  -> teacher : AuthHello (server nonce)
     AuthRequest = 101,  // teacher -> agent  : AuthRequest (client nonce + client proof)

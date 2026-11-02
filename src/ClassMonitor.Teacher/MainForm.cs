@@ -191,11 +191,10 @@ internal sealed class MainForm : Form
         tools.Items.Add(mon);
 
         tools.Items.Add(new ToolStripSeparator());
-        tools.Items.Add(TextButton("🔌  Connect manually", "Connect to a specific machine by host/IP", (_, _) => ConnectManualHost()));
+        tools.Items.Add(TextButton("Add computer", "Add a computer with its address and password", (_, _) => AddComputerDialog()));
         tools.Items.Add(TextButton("☑  Select all", "Select every machine", (_, _) => SelectAll(true)));
         tools.Items.Add(TextButton("☐  Clear", "Clear the selection", (_, _) => SelectAll(false)));
         tools.Items.Add(new ToolStripSeparator());
-        tools.Items.Add(TextButton("Enroll device", "Enroll a managed device using a reviewed certificate request", (_, _) => EnrollDevice()));
         tools.Items.Add(TextButton("⚙  Settings", "Validated console and classroom preferences", (_, _) => EditSettings()));
 
         // right-aligned thumbnail-size control
@@ -233,7 +232,7 @@ internal sealed class MainForm : Form
 
         // ---- Status bar ----------------------------------------------------
         var statusStrip = new StatusStrip { BackColor = Color.FromArgb(246, 247, 249) };
-        _status = new ToolStripStatusLabel("Discovering agents…") { Spring = true, TextAlign = ContentAlignment.MiddleLeft };
+        _status = new ToolStripStatusLabel("Use Add computer to add a student computer.") { Spring = true, TextAlign = ContentAlignment.MiddleLeft };
         _selStatus = new ToolStripStatusLabel("0 selected");
         statusStrip.Items.Add(_status);
         statusStrip.Items.Add(_selStatus);
@@ -269,9 +268,7 @@ internal sealed class MainForm : Form
             _retryTimer.Start();
             RestartDiscovery();
             MaintainRecordings();
-            foreach (var peer in _config.PairedDevices) AddOrConnect(peer.Host, peer.Enrollment.DeviceId, peer.Port, peer.Enrollment.DeviceId);
-            foreach (var host in _config.ManualHosts.Where(h => !string.IsNullOrWhiteSpace(h)).Distinct(StringComparer.OrdinalIgnoreCase))
-                AddOrConnect(host.Trim(), host.Trim(), Net.AgentTcpPort);
+            foreach (var peer in _config.PairedDevices) AddOrConnect(peer.Host, peer.Host, peer.Port, peer.Enrollment.DeviceId);
         };
         ApplyPreferences();
     }
@@ -398,12 +395,76 @@ internal sealed class MainForm : Form
 
     // ---- Discovery / connection lifecycle ---------------------------------
 
+    /// <summary>Only computers the teacher added appear. A beacon just helps find an added computer whose address changed; its pin is still checked.</summary>
     private void OnAgentSeen(string host, string machine, string status, int port, string deviceId)
-        => QueueUi(() => AddOrConnect(host, machine, port, deviceId));
+        => QueueUi(() =>
+        {
+            var known = _config.PairedDevices.FirstOrDefault(p => p.Enrollment.DeviceId == deviceId);
+            if (known is null) return;
+            if (!string.Equals(known.Host, host, StringComparison.OrdinalIgnoreCase) && !_conns.ContainsKey(known.Host))
+            {
+                RemoveTile(known.Host);
+                _config.PairedDevices[_config.PairedDevices.IndexOf(known)] = known with { Host = host };
+                SavePreferencesQuietly();
+            }
+            AddOrConnect(host, machine, port, deviceId);
+        });
+
+    private void RemoveTile(string host)
+    {
+        if (_tiles.Remove(host, out var tile)) { _grid.Controls.Remove(tile); tile.Dispose(); }
+        _pairings.Remove(host);
+        _selected.Remove(host);
+    }
+
+    private void RemoveComputer(string host)
+    {
+        if (MessageBox.Show(this, $"Remove {DeviceName(host)} from this console?", "Remove computer", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+        if (_conns.Remove(host, out var conn))
+        {
+            if (_recorders.Remove(host, out var recorder)) recorder.Dispose();
+            if (_renderers.TryRemove(host, out var renderer)) renderer.Dispose();
+            if (_liveViews.Remove(host, out var live)) live.Close();
+            conn.Dispose();
+        }
+        _config.PairedDevices.RemoveAll(p => string.Equals(p.Host, host, StringComparison.OrdinalIgnoreCase));
+        SavePreferencesQuietly();
+        RemoveTile(host);
+        _reconnect.Connected(host);
+        ApplyDashboardFilter();
+    }
+
+    private void AddComputerDialog()
+    {
+        X509Certificate2 identity;
+        try { identity = TeacherIdentity; }
+        catch (Exception ex) when (ex is System.Security.Cryptography.CryptographicException or InvalidOperationException)
+        {
+            MessageBox.Show(this, ex.Message, "Add computer", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        using var form = new AddComputerForm(identity, _config.Settings, _config.PairedDevices.LastOrDefault()?.Enrollment.ClassroomId);
+        if (form.ShowDialog(this) != DialogResult.OK || form.Added is not { } device) return;
+        SaveAddedComputer(device);
+    }
+
+    private void SaveAddedComputer(PairedDevice device)
+    {
+        EnrollmentWorkflow.Save(_config.PairedDevices, device);
+        try { _config.Save(AppConfig.TeacherConfigPath); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            MessageBox.Show(this, ex.Message, "Add computer", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        _reconnect.Connected(device.Host);
+        AddOrConnect(device.Host, device.Host, device.Port, device.Enrollment.DeviceId);
+    }
 
     private void AddOrConnect(string host, string machine, int port, string? deviceId = null)
     {
         if (_closing || _conns.ContainsKey(host) || host.Length > 253) return;
+        if (!_config.PairedDevices.Any(p => p.Enrollment.DeviceId == deviceId || string.Equals(p.Host, host, StringComparison.OrdinalIgnoreCase))) return;
         if (!_seen.ContainsKey(host) && _seen.Count >= 500) return;
         _seen[host] = (machine, deviceId ?? "", port);
         var pairing = PairingLookup.Find(_config.PairedDevices, host, deviceId);
@@ -417,6 +478,9 @@ internal sealed class MainForm : Form
                 else _status.Text = UiText.Text("Enrollment and an active lesson are required", _config.Settings.General.Language);
             };
             tile.ApplyPreferences(_config.Settings);
+            var removeOnly = new ContextMenuStrip();
+            removeOnly.Items.Add("Remove computer", null, (_, _) => RemoveComputer(host));
+            tile.ContextMenuStrip = removeOnly;
             _tiles[host] = tile;
             _grid.Controls.Add(tile);
         }
@@ -646,7 +710,8 @@ internal sealed class MainForm : Form
 
     private void UpdateStatus()
     {
-        _status.Text = _conns.Count == 0 ? "Discovering agents…" : $"{_conns.Count} agent(s) connected";
+        _status.Text = _config.PairedDevices.Count == 0 ? "Use Add computer to add a student computer."
+            : $"{_conns.Count} of {_config.PairedDevices.Count} computer(s) connected";
         _selStatus.Text = _selected.Count == 0 ? "targets: all" : $"{_selected.Count} selected";
     }
 
@@ -694,6 +759,8 @@ internal sealed class MainForm : Form
         recm.DropDownItems.Add(recStart);
         recm.DropDownItems.Add(recStop);
         menu.Items.Add(recm);
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Remove computer", null, (_, _) => RemoveComputer(conn.Host));
 
         return menu;
     }
@@ -995,39 +1062,6 @@ internal sealed class MainForm : Form
         _status.Text = $"Saved recording ({frames} frames) → {path}";
     }
 
-    private void ConnectManualHost()
-    {
-        var host = Prompt.Show("Connect manually",
-            "Host or IP address to connect to (optionally include :port):",
-            "192.168.1.50");
-        if (string.IsNullOrWhiteSpace(host)) return;
-
-        string cleaned = host.Trim();
-        int port = Net.AgentTcpPort;
-
-        if (cleaned.Contains(':') && cleaned.Count(ch => ch == ':') == 1 && !cleaned.StartsWith("[") && !cleaned.Contains("]"))
-        {
-            var last = cleaned.LastIndexOf(':');
-            if (int.TryParse(cleaned[(last + 1)..], out var parsedPort))
-            {
-                port = parsedPort;
-                cleaned = cleaned[..last];
-            }
-        }
-
-        cleaned = cleaned.Trim();
-        if (cleaned.Length == 0) return;
-
-        if (!_config.ManualHosts.Contains(cleaned, StringComparer.OrdinalIgnoreCase))
-        {
-            _config.ManualHosts.Add(cleaned);
-            try { _config.Save(AppConfig.TeacherConfigPath); } catch { }
-        }
-
-        AddOrConnect(cleaned, cleaned, port);
-        _status.Text = $"Connecting to {cleaned}:{port}…";
-    }
-
     private void EditSettings()
     {
         using var form = new SettingsCenterForm(_config.Settings, updated =>
@@ -1051,15 +1085,7 @@ internal sealed class MainForm : Form
         }
         using var form = new EnrollDeviceForm(identity, _config.Settings);
         if (form.ShowDialog(this) != DialogResult.OK || form.Enrolled is not { } device) return;
-        EnrollmentWorkflow.Save(_config.PairedDevices, device);
-        try { _config.Save(AppConfig.TeacherConfigPath); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
-        {
-            MessageBox.Show(this, ex.Message, "Enroll device", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
-        }
-        _reconnect.Connected(device.Host);
-        AddOrConnect(device.Host, device.Enrollment.DeviceId, device.Port, device.Enrollment.DeviceId);
+        SaveAddedComputer(device);
     }
 
     private void RestartDiscovery()

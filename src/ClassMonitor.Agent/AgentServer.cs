@@ -27,17 +27,32 @@ internal sealed class AgentServer : IDisposable
     private readonly SemaphoreSlim _lessonOwner = new(1, 1);
     private readonly CancellationTokenSource _cts = new();
     private readonly AuditWriter _audit;
+    private readonly Func<PairingPassword?> _pairingPassword;
+    private readonly Action<ManagedEnrollment> _savePairing;
+    private readonly int _pairingPort;
+    private readonly SemaphoreSlim _pairingGate = new(1, 1);
+    private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
+    private TimeSpan _pairingLockedUntil;
+    private int _pairingFailures;
+    private const int MaximumPairingFailures = 5;
+    private static readonly TimeSpan PairingLockout = TimeSpan.FromMinutes(15);
     private TcpListener? _listener;
+    private TcpListener? _pairingListener;
 
     public AgentServer(IAgentInteraction ui, AppConfig config, X509Certificate2? identity = null,
         Func<DeviceEnrollment?>? enrollmentProvider = null, ISessionRestrictions? restrictions = null,
-        Func<int, int, int, byte[]>? capture = null, AgentOperations? operations = null, string? auditPath = null)
+        Func<int, int, int, byte[]>? capture = null, AgentOperations? operations = null, string? auditPath = null,
+        Func<PairingPassword?>? pairingPassword = null, Action<ManagedEnrollment>? savePairing = null, int pairingPort = PasswordPairing.Port)
     {
         config.Validate();
         _ui = ui; _config = config;
         _cert = identity ?? WindowsIdentityStore.GetOrCreate("Agent"); _ownsCertificate = identity is null;
         string devicePin = CertificateTrust.Fingerprint(_cert);
-        _enrollment = enrollmentProvider ?? (() => ManagedEnrollmentStore.Load(devicePin));
+        // An enrollment an administrator imported takes precedence over one added with the password.
+        _enrollment = enrollmentProvider ?? (() => ManagedEnrollmentStore.Load(devicePin) ?? LocalEnrollmentStore.Load(devicePin));
+        _pairingPassword = pairingPassword ?? LocalEnrollmentStore.LoadPassword;
+        _savePairing = savePairing ?? LocalEnrollmentStore.SaveEnrollment;
+        _pairingPort = pairingPort;
         _restrictions = restrictions ?? new Restrictions(ui);
         _capture = capture ?? ScreenCapture.CaptureJpeg;
         _operations = operations ?? AgentOperations.Default;
@@ -47,7 +62,86 @@ internal sealed class AgentServer : IDisposable
     public void Start()
     {
         _ = Task.Run(() => ListenWhenEnrolledAsync(_cts.Token));
+        _ = Task.Run(() => ListenForPairingAsync(_cts.Token));
         if (_config.Settings.Network.DiscoveryEnabled) _ = Task.Run(() => BeaconLoopAsync(_cts.Token));
+    }
+
+    private PairingPassword? ReadPairingPassword()
+    {
+        try { return _pairingPassword(); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidDataException) { return null; }
+    }
+
+    /// <summary>The pairing port stays closed until a password was set during installation.</summary>
+    private async Task ListenForPairingAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                if (ReadPairingPassword() is not null)
+                {
+                    var address = string.IsNullOrEmpty(_config.Settings.Network.LocalInterfaceAddress)
+                        ? IPAddress.Any : IPAddress.Parse(_config.Settings.Network.LocalInterfaceAddress);
+                    var listener = new TcpListener(address, _pairingPort);
+                    listener.Start();
+                    _pairingListener = listener;
+                    if (ct.IsCancellationRequested) { listener.Stop(); return; }
+                    while (!ct.IsCancellationRequested)
+                    {
+                        var client = await listener.AcceptTcpClientAsync(ct);
+                        _ = Task.Run(() => HandlePairingAsync(client, ct));
+                    }
+                    return;
+                }
+            }
+            catch (OperationCanceledException) { return; }
+            catch (ObjectDisposedException) { return; }
+            catch (SocketException) { /* The port is busy; keep the agent alive and retry. */ }
+            try { await Task.Delay(2000, ct); } catch (OperationCanceledException) { return; }
+        }
+    }
+
+    /// <summary>One attempt at a time, and a lockout after repeated wrong passwords, so guessing over the network is slow.</summary>
+    private async Task HandlePairingAsync(TcpClient client, CancellationToken serverCt)
+    {
+        using var ownedClient = client;
+        if (!await _pairingGate.WaitAsync(0, serverCt)) return;
+        try
+        {
+            client.NoDelay = true;
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(serverCt);
+            deadline.CancelAfter(TimeSpan.FromSeconds(30));
+            await using var tls = await SecureChannel.AcceptForPairingAsync(client, _cert, TimeSpan.FromSeconds(_config.Settings.Network.HandshakeTimeoutSeconds), deadline.Token);
+            if (_clock.Elapsed < _pairingLockedUntil)
+            {
+                await PasswordPairing.RefuseAsync(tls, "locked", deadline.Token);
+                return;
+            }
+            var password = ReadPairingPassword();
+            if (password is null) return;
+            var device = EnrollmentManager.CreateRequest(_cert, Environment.MachineName + " / " + Environment.UserName);
+            try
+            {
+                var document = await PasswordPairing.AgentAsync(tls, password, device, SecureChannel.RemotePin(tls), _config.Port, deadline.Token);
+                _savePairing(document);
+                _pairingFailures = 0;
+                var added = ReadPolicy();
+                if (added is not null) Record(AuditEvent.EnrollmentImported, added, ClassroomPermission.None, true);
+                await PasswordPairing.ConfirmAsync(tls, deadline.Token);
+                _ui.ShowMessage($"This computer was added by {added?.Teacher.DisplayName}. / أضاف المعلم هذا الجهاز.", 8000);
+            }
+            catch (AuthenticationException)
+            {
+                if (++_pairingFailures >= MaximumPairingFailures)
+                {
+                    _pairingFailures = 0;
+                    _pairingLockedUntil = _clock.Elapsed + PairingLockout;
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { /* A failed attempt changes nothing and must not stop the agent. */ }
+        finally { _pairingGate.Release(); }
     }
 
     /// <summary>The port stays closed until a valid enrollment exists; an import needs no restart.</summary>
@@ -165,7 +259,7 @@ internal sealed class AgentServer : IDisposable
 
     public void Dispose()
     {
-        _cts.Cancel(); _listener?.Stop(); _restrictions.Dispose();
+        _cts.Cancel(); _listener?.Stop(); _pairingListener?.Stop(); _restrictions.Dispose();
         if (_ownsCertificate) _cert.Dispose();
         // Active tasks observe cancellation; do not dispose their token/semaphore while unwinding.
     }
@@ -187,7 +281,6 @@ internal sealed class AgentServer : IDisposable
         private readonly ConnectionLimits _fileLimits = new(1, 6);
         private volatile ScreenRequest? _request;
         private bool _everStarted, _assisting, _recording, _shared, _locked, _restricted;
-        private volatile bool _endedByStudent;
         private DateTime _lastPeer = DateTime.UtcNow;
         private DateTime? _focusUntil;
         private CancellationToken _ct;
@@ -218,12 +311,6 @@ internal sealed class AgentServer : IDisposable
                 stop.Cancel();
                 // A hung capture must not hold cleanup or the lesson slot; cleanup is authoritative on every exit.
                 try { await Task.WhenAll(tasks).WaitAsync(TimeSpan.FromSeconds(5), CancellationToken.None); } catch (Exception) { }
-                if (_endedByStudent)
-                {
-                    using var notice = new CancellationTokenSource(TimeSpan.FromSeconds(1));
-                    try { await WriteJsonAsync(MsgType.SessionEnded, new SessionEndNotice(true), notice.Token); }
-                    catch (Exception ex) when (ex is IOException or OperationCanceledException or ObjectDisposedException) { }
-                }
             }
             finally
             {
@@ -239,7 +326,14 @@ internal sealed class AgentServer : IDisposable
             }
         }
 
-        private void StopRequested() { _endedByStudent = true; _stop?.Cancel(); }
+        /// <summary>The teacher is told before anything is cancelled, because cancelled socket reads can leave the connection unusable.</summary>
+        private void StopRequested() => _ = Task.Run(async () =>
+        {
+            using var notice = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            try { await WriteJsonAsync(MsgType.SessionEnded, new SessionEndNotice(true), notice.Token); }
+            catch (Exception ex) when (ex is IOException or OperationCanceledException or ObjectDisposedException) { }
+            finally { _stop?.Cancel(); }
+        });
         private void Status() => _ui.SetManagedState(_authorization.IsActive, _policy.Teacher.DisplayName, _policy.ClassroomId, _assisting, _recording, _shared);
         private void Log(AuditEvent action, ClassroomPermission permission, bool allowed, AuditReason reason = AuditReason.None)
             => _audit(action, _policy, permission, allowed, reason);

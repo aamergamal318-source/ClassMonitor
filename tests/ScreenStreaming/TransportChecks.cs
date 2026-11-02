@@ -48,7 +48,7 @@ internal static class TransportChecks
         {
             string audit = Path.Combine(Path.GetTempPath(), "ClassMonitor.ScreenStreaming", Guid.NewGuid().ToString("N"), "audit.jsonl");
             using var ui = new AgentUi();
-            using var server = new AgentServer(ui, config, cert, () => enrollment, new NoRestrictions(), captureDesktop ? null : Synthetic, null, audit);
+            using var server = new AgentServer(ui, config, cert, () => enrollment, new NoRestrictions(), captureDesktop ? null : Synthetic, null, audit, () => null);
             server.Start();
             await Task.Delay(300, timeout.Token);
             using var conn = new AgentConnection("127.0.0.1", $"Test {clientIndex}", pairing, teacher, settings);

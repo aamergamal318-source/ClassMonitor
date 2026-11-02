@@ -22,7 +22,8 @@ public static class InstallerCore
     public const string ManifestName = "install-manifest.json";
     public const long MaximumEntryBytes = 512L * 1024 * 1024;
     public const string RunValueName = "ClassMonitorAgent";
-    private const int AgentTcpPort = 5900, DiscoveryUdpPort = 5901;
+    private const string AgentTcpPorts = "5900,5902";
+    private const int DiscoveryUdpPort = 5901;
     private static string Label(InstallComponent component) => component == InstallComponent.Teacher ? "ClassMonitor Teacher" : "ClassMonitor Student";
     public static string ShortcutName(InstallComponent component) => Label(component) + ".lnk";
     public static string FirewallRuleName(InstallComponent component, string userName) => $"{Label(component)} ({userName})";
@@ -38,7 +39,7 @@ public static class InstallerCore
             "advfirewall", "firewall", "add", "rule", "name=" + FirewallRuleName(component, userName), "dir=in", "action=allow",
             "program=" + application, "enable=yes", "profile=domain,private", "remoteip=localsubnet",
             component == InstallComponent.Teacher ? "protocol=UDP" : "protocol=TCP",
-            "localport=" + (component == InstallComponent.Teacher ? DiscoveryUdpPort : AgentTcpPort)
+            "localport=" + (component == InstallComponent.Teacher ? DiscoveryUdpPort.ToString() : AgentTcpPorts)
         };
     }
 

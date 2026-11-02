@@ -6,14 +6,15 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 - One installer, `ClassMonitorSetup.exe`, for teacher and student computers, with Start menu and desktop shortcuts, an open-after-install choice, and opt-in sign-in start and firewall access.
-- Explicit device enrollment: the student exports a public request, the teacher signs it with chosen permissions, and an administrator imports it after comparing fingerprints.
+- A computer password chosen when installing a student computer. The teacher console starts empty and adds each computer with its address and password; only a slow salted hash is stored and the password never crosses the network.
+- Enrollment by file for power and program commands: the student exports a request, the teacher signs it, and an administrator imports it after comparing fingerprints.
 - Bounded lessons started by the teacher for one classroom. Nothing is viewed or controlled outside a lesson, and every operation is checked on the student computer.
 - Visible student state: a distinct tray icon during a lesson, and a banner the student cannot close while the screen is controlled, recorded or shown to the class.
 - Questions to students, classroom scoping, device search and presence filters, saved layout, and Arabic, Hebrew and English interface text.
 - Administrator tools in setup to import enrollment and remove restrictions left by a sudden interruption.
 
 ### Changed
-- **Breaking:** the shared class password is gone. Every student computer must be enrolled once after upgrading.
+- **Breaking:** the shared class password is gone. Run the new setup on each student computer and add it to the teacher console.
 - Connections use mutual TLS pinned to both enrolled identities.
 - Agent settings moved from `%ProgramData%\ClassMonitor` to `%LOCALAPPDATA%\ClassMonitor`. They hold preferences only and grant nothing.
 - Sign-in start is now a per-account setting with no administrator rights. The earlier elevated scheduled task is no longer created.

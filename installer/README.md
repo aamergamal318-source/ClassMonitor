@@ -2,13 +2,16 @@
 
 This original WinForms bootstrapper is the one file people download. It installs **one
 chosen component** into `%LOCALAPPDATA%\Programs\ClassMonitor\Teacher` or `...\Agent`,
-for the current Windows account, after an explicit checkbox and Install click. It adds
-Start menu and optional desktop shortcuts. Sign-in start and a firewall rule happen only
-when ticked, and the firewall rule shows the Windows administrator prompt. It never
-enrolls a device or starts monitoring.
+for the current Windows account, after an explicit checkbox and Install click. For a
+student computer it requires a computer password, of which only a slow salted hash is
+stored; the teacher uses that password to add the computer. It adds Start menu and
+optional desktop shortcuts. Sign-in start and a firewall rule are visible choices, ticked
+by default for a student computer because the teacher cannot reach it otherwise, and the
+firewall rule shows the Windows administrator prompt. It never starts monitoring: that
+needs the teacher to add the computer and start a lesson.
 
 Its administrator tools run elevated from this copy of setup, never from the student's
-writable program folder: import an enrollment file after comparing fingerprints, and
+writable program folder: import an enrollment file (needed for power and program commands) after comparing fingerprints, and
 remove website and internet blocks left by an interrupted lesson. Run them from a trusted
 copy that students cannot change.
 

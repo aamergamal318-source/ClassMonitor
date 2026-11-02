@@ -10,4 +10,6 @@ These checks run the real `AgentServer` and `AgentConnection` over loopback mutu
 
 They cover enrollment gating, certificate and pairing rejection, lesson start and expiry, replay, classroom scope, capability refusal, visible assistance, recording and sharing state, cleanup on every way a session ends, revocation, health timeouts, malformed traffic, file limits, audit content, retention, and multi-account records.
 
+`--live-agent <ClassMonitorAgent.exe>` runs the real agent program on this computer, adds it with a generated password, and decodes frames of the real screen during a lesson. Frames stay in memory. It refuses to run if this account already has a computer password, and it removes what it created. `--windows-identities` exercises real non-exportable Windows keys.
+
 They do not establish that real screen capture, the Windows ACLs on an administrator import, firewall or hosts changes, or physical devices work. See `docs/TEST_PLAN.md`.

@@ -51,6 +51,68 @@ public static class SecureChannel
         catch { await ssl.DisposeAsync(); throw; }
     }
 
+    /// <summary>
+    /// For the pairing port only. Neither side knows the other's pin yet, so a certificate is accepted here and bound
+    /// afterwards by the password proof. Nothing but pairing messages may flow on this channel.
+    /// </summary>
+    public static async Task<SslStream> ConnectForPairingAsync(TcpClient client, X509Certificate2 identity, TimeSpan timeout, CancellationToken ct)
+    {
+        RequireIdentity(identity);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(timeout);
+        var ssl = new SslStream(client.GetStream(), false, (_, certificate, _, _) => ValidForPairing(certificate));
+        try
+        {
+            await ssl.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+            {
+                TargetHost = "ClassMonitor", ClientCertificates = new X509CertificateCollection { identity },
+                EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
+                CertificateRevocationCheckMode = X509RevocationMode.NoCheck
+            }, deadline.Token).ConfigureAwait(false);
+            if (!ssl.IsMutuallyAuthenticated) throw new AuthenticationException("Mutual endpoint authentication is required.");
+            return ssl;
+        }
+        catch { await ssl.DisposeAsync(); throw; }
+    }
+
+    /// <summary>See <see cref="ConnectForPairingAsync"/>.</summary>
+    public static async Task<SslStream> AcceptForPairingAsync(TcpClient client, X509Certificate2 identity, TimeSpan timeout, CancellationToken ct)
+    {
+        RequireIdentity(identity);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(timeout);
+        var ssl = new SslStream(client.GetStream(), false, (_, certificate, _, _) => ValidForPairing(certificate));
+        try
+        {
+            await ssl.AuthenticateAsServerAsync(new SslServerAuthenticationOptions
+            {
+                ServerCertificate = identity, ClientCertificateRequired = true,
+                EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
+                CertificateRevocationCheckMode = X509RevocationMode.NoCheck
+            }, deadline.Token).ConfigureAwait(false);
+            if (!ssl.IsMutuallyAuthenticated) throw new AuthenticationException("Mutual endpoint authentication is required.");
+            return ssl;
+        }
+        catch { await ssl.DisposeAsync(); throw; }
+    }
+
+    public static string RemotePin(SslStream stream)
+    {
+        using var peer = X509CertificateLoader.LoadCertificate(stream.RemoteCertificate!.GetRawCertData());
+        return CertificateTrust.Fingerprint(peer);
+    }
+
+    private static bool ValidForPairing(X509Certificate? certificate)
+    {
+        if (certificate is null) return false;
+        try
+        {
+            using var peer = X509CertificateLoader.LoadCertificate(certificate.GetRawCertData());
+            return CertificateTrust.Matches(peer, CertificateTrust.Fingerprint(peer));
+        }
+        catch { return false; }
+    }
+
     public static async Task AuthenticateTeacherAsync(Stream stream, string secret, CancellationToken ct)
     {
         if (!EnrollmentManager.IsStrongPairingSecret(secret)) throw new AuthenticationException("Explicit device pairing is required.");

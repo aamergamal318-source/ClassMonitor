@@ -5,7 +5,6 @@ using System.Text.Json;
 using ClassMonitor.Installation;
 using ClassMonitor.Shared.Management;
 using ClassMonitor.Shared.Sessions;
-using Microsoft.Win32;
 
 internal static class Program
 {
@@ -94,11 +93,14 @@ internal static class Program
         private readonly CheckBox _launch = new() { Text = "Open after installing / فتح البرنامج بعد التثبيت", AutoSize = true, Checked = true };
         private readonly CheckBox _autostart = new() { Text = "Start when I sign in (visible in the tray) / التشغيل عند تسجيل الدخول (يظهر بجانب الساعة)", AutoSize = true };
         private readonly CheckBox _firewall = new() { Text = "Allow classroom connections through Windows Firewall (asks for administrator) / السماح باتصالات الصف عبر جدار الحماية", AutoSize = true };
+        private readonly TextBox _password = new() { Width = 310, UseSystemPasswordChar = true, AccessibleName = "Computer password" };
+        private readonly TextBox _confirm = new() { Width = 310, UseSystemPasswordChar = true, AccessibleName = "Confirm computer password" };
+        private readonly FlowLayoutPanel _passwordPanel = new() { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, Visible = false, Margin = new Padding(0, 8, 0, 4) };
         private readonly Label _status = new() { AutoSize = false, Height = 110, Dock = DockStyle.Bottom };
         private readonly Button _install = new() { Text = "Install / تثبيت", Width = 130, Enabled = false };
         public SetupForm()
         {
-            Text = "ClassMonitor setup"; ClientSize = new Size(760, 600); StartPosition = FormStartPosition.CenterScreen;
+            Text = "ClassMonitor setup"; ClientSize = new Size(760, 720); StartPosition = FormStartPosition.CenterScreen;
             FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false;
             var body = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, Padding = new Padding(22), WrapContents = false };
             body.Controls.Add(new Label { Text = "ClassMonitor · Classroom tools", Font = new Font("Segoe UI", 20, FontStyle.Bold), AutoSize = true });
@@ -120,15 +122,25 @@ internal static class Program
             cleanRestrictions.Click += (_, _) => RunElevated("--clean-restrictions");
             var tools = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 14, 0, 0) };
             tools.Controls.AddRange(new Control[] { importEnrollment, cleanRestrictions });
-            body.Controls.AddRange(new Control[] { _component, _desktop, _launch, _autostart, _firewall, _consent, _install,
+            _passwordPanel.Controls.AddRange(new Control[]
+            {
+                new Label { Text = "Computer password (at least 8 characters). The teacher uses it to add this computer. / كلمة مرور الجهاز (8 أحرف على الأقل). يستخدمها المعلم لإضافة هذا الجهاز.", AutoSize = true, MaximumSize = new Size(700, 0) },
+                _password,
+                new Label { Text = "Repeat the password / أعد كتابة كلمة المرور", AutoSize = true, Margin = new Padding(3, 6, 3, 0) },
+                _confirm,
+            });
+            body.Controls.AddRange(new Control[] { _component, _passwordPanel, _desktop, _launch, _autostart, _firewall, _consent, _install,
                 new Label { Text = "Administrator tools (run this copy of setup from a location students cannot change) / أدوات المسؤول", AutoSize = true, Margin = new Padding(3, 18, 3, 0) }, tools });
             _status.Padding = new Padding(22, 5, 22, 5);
             _component.SelectedIndexChanged += (_, _) =>
             {
                 bool student = _component.SelectedIndex == 1;
                 _autostart.Enabled = student;
-                _autostart.Checked = student && AutostartIsOn();
-                _launch.Checked = !student;
+                // A student computer must be running and reachable for the teacher to add it. Each stays a visible choice here.
+                _autostart.Checked = student;
+                _firewall.Checked = student;
+                _launch.Checked = true;
+                _passwordPanel.Visible = student;
             };
             _autostart.Enabled = false;
             using var payload = Payload();
@@ -137,10 +149,14 @@ internal static class Program
             _consent.CheckedChanged += (_, _) => _install.Enabled = available && _consent.Checked;
             _install.Click += async (_, _) =>
             {
+                var component = _component.SelectedIndex == 0 ? InstallComponent.Teacher : InstallComponent.Agent;
+                string? passwordProblem = component == InstallComponent.Agent ? PasswordProblem() : null;
+                if (passwordProblem is not null) { _status.Text = passwordProblem; return; }
+                string password = _password.Text;
+                _password.Clear(); _confirm.Clear();
                 _install.Enabled = _component.Enabled = _consent.Enabled = false;
                 try
                 {
-                    var component = _component.SelectedIndex == 0 ? InstallComponent.Teacher : InstallComponent.Agent;
                     string root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "ClassMonitor", component.ToString());
                     string application = Path.Combine(root, InstallerCore.ApplicationName(component));
                     bool desktop = _desktop.Checked, autostart = _autostart.Checked, firewall = _firewall.Checked, launch = _launch.Checked;
@@ -151,6 +167,9 @@ internal static class Program
                         using var reader = new StreamReader(Assembly.GetExecutingAssembly().GetManifestResourceStream("ClassMonitor.Uninstall.ps1")!);
                         string version = Assembly.GetExecutingAssembly().GetName().Version!.ToString(3);
                         InstallerCore.Install(zip, component, root, version, reader.ReadToEnd(), new WindowsRegistration(desktop, autostart));
+                        // Only the slow salted hash is stored. Left empty on a reinstall, the current password stays.
+                        if (component == InstallComponent.Agent && password.Length != 0)
+                            LocalEnrollmentStore.SavePassword(PasswordPairing.Create(password));
                     });
                     string notes = firewall ? AllowThroughFirewall(component, application) : "";
                     if (launch)
@@ -166,15 +185,17 @@ internal static class Program
             Controls.Add(body); Controls.Add(_status);
         }
 
-        private static bool AutostartIsOn()
+        private string? PasswordProblem()
         {
-            using var run = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");
-            return run?.GetValue(InstallerCore.RunValueName) is not null;
+            if (_password.Text != _confirm.Text) return "The two passwords do not match. / كلمتا المرور غير متطابقتين.";
+            if (_password.Text.Length == 0 && File.Exists(LocalEnrollmentStore.PasswordPath)) return null;
+            if (_password.Text.Length < PasswordPairing.MinimumLength) return "Choose a password of at least 8 characters. / اختر كلمة مرور من 8 أحرف على الأقل.";
+            return null;
         }
 
         private static string NextStep(InstallComponent component) => component == InstallComponent.Teacher
-            ? "Next: open the console, then use Enroll device for each student request. / الخطوة التالية: استخدم Enroll device لكل طلب طالب."
-            : "Next: from the tray icon choose Export enrollment request and give the file to the teacher. / الخطوة التالية: صدّر طلب التسجيل من أيقونة البرنامج وأعطه للمعلم.";
+            ? "Next: open the console and use Add computer with each computer's address and password. / الخطوة التالية: استخدم «Add computer» بعنوان كل جهاز وكلمة مروره."
+            : "Next: on the teacher computer use Add computer with this computer's address and password. / الخطوة التالية: أضف هذا الجهاز من جهاز المعلم بعنوانه وكلمة مروره.";
 
         /// <summary>Windows shows its own elevation prompt. Declining keeps the install and says what is missing.</summary>
         private static string AllowThroughFirewall(InstallComponent component, string application)

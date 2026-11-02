@@ -23,6 +23,74 @@ const ClassroomPermission Standard = ClassroomPermission.View | ClassroomPermiss
 Fixtures.StudentIdentity = student;
 Fixtures.TeacherIdentity = teacher;
 
+// Optional: the real agent program, on this computer, added with a password. Frames stay in memory and are only decoded.
+if (args.Length == 2 && args[0] == "--live-agent")
+{
+    await Check("real agent is added with its password, then streams a decodable screen during a lesson", async () =>
+    {
+        foreach (string file in new[] { LocalEnrollmentStore.PasswordPath, LocalEnrollmentStore.EnrollmentPath })
+            if (File.Exists(file)) throw new Exception("Refusing to run: this account already has " + file);
+        static string[] Existing()
+        {
+            using var store = new X509Store(StoreName.My, StoreLocation.CurrentUser);
+            store.Open(OpenFlags.ReadOnly);
+            return store.Certificates.Where(c => c.Subject.StartsWith("CN=ClassMonitor ")).Select(c => c.Thumbprint).ToArray();
+        }
+        var before = Existing();
+        string password = Convert.ToBase64String(RandomNumberGenerator.GetBytes(18));
+        LocalEnrollmentStore.SavePassword(PasswordPairing.Create(password));
+        using var agent = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(args[1]) { UseShellExecute = false })!;
+        var teacherIdentity = WindowsIdentityStore.GetOrCreate("Teacher");
+        try
+        {
+            var settings = new ClassMonitor.Shared.Settings.SchoolSettings();
+            PairedDevice? device = null;
+            var until = DateTime.UtcNow.AddSeconds(30);
+            while (device is null)
+            {
+                try { device = await AddComputer.RunAsync("127.0.0.1", password, "live-test", teacherIdentity, settings); }
+                catch (SocketException) when (DateTime.UtcNow < until) { await Task.Delay(500); }
+            }
+            Console.WriteLine("  added: " + device.Enrollment.DeviceId[..20]);
+            using var conn = new AgentConnection("127.0.0.1", "live", device, teacherIdentity, settings);
+            until = DateTime.UtcNow.AddSeconds(15);
+            while (true)
+            {
+                try { await conn.ConnectAsync(); break; }
+                catch (SocketException) when (DateTime.UtcNow < until) { await Task.Delay(500); }
+            }
+            Assert(await conn.StartLessonAsync(DateTimeOffset.UtcNow.AddMinutes(2)));
+            await conn.RequestScreenAsync(960, 50, 300);
+            await Eventually(() => conn.FramesReceived >= 3, seconds: 20);
+            using (var stream = new MemoryStream(conn.LastFrame!))
+            using (var image = System.Drawing.Image.FromStream(stream))
+                Console.WriteLine($"  frames: {conn.FramesReceived}; decoded {image.Width}x{image.Height}; machine reported: {conn.MachineName.Length > 0}");
+            await conn.EndLessonAsync();
+            await Task.Delay(500);
+            int frames = (int)conn.FramesReceived;
+            await Task.Delay(1000);
+            Assert(conn.FramesReceived == frames);
+            Console.WriteLine("  frames stopped after the lesson ended");
+        }
+        finally
+        {
+            if (!agent.HasExited) { agent.Kill(); agent.WaitForExit(5000); }
+            foreach (string file in new[] { LocalEnrollmentStore.PasswordPath, LocalEnrollmentStore.EnrollmentPath, LocalEnrollmentStore.Root + "\\audit.jsonl" })
+                if (File.Exists(file)) File.Delete(file);
+            using var store = new X509Store(StoreName.My, StoreLocation.CurrentUser);
+            store.Open(OpenFlags.ReadWrite);
+            foreach (var certificate in store.Certificates.Where(c => c.Subject.StartsWith("CN=ClassMonitor ") && !before.Contains(c.Thumbprint)).ToArray())
+            {
+                using (var key = certificate.GetRSAPrivateKey() as RSACng) key?.Key.Delete();
+                store.Remove(certificate);
+            }
+            teacherIdentity.Dispose();
+        }
+    });
+    Console.WriteLine(failures.Count == 0 ? "PASS: live agent." : "FAIL: live agent.");
+    return failures.Count == 0 ? 0 : 1;
+}
+
 // Optional: real non-exportable Windows keys in this account's store. Identities this run creates are removed afterwards.
 if (args.Contains("--windows-identities"))
 {
@@ -125,6 +193,133 @@ await Check("agent itself refuses a client with a wrong pairing proof", async ()
     try { Assert(await Frame.ReadAsync(tls) is null); }
     catch (IOException) { /* The agent closed the session without answering, which is the expected refusal. */ }
     Assert(!host.Ui.Active && host.Capture.Calls == 0);
+});
+await Check("the pairing port stays closed until a password is set", async () =>
+{
+    await using var host = new Host(Standard, enrolled: false);
+    await Task.Delay(300);
+    Assert(!await host.PairingPortOpenAsync());
+    host.Password = PasswordPairing.Create("correct horse");
+    await EventuallyAsync(host.PairingPortOpenAsync, 5);
+});
+await Check("adding a computer with the right password connects and works in a lesson", async () =>
+{
+    await using var host = new Host(Standard, enrolled: false);
+    host.Password = PasswordPairing.Create("correct horse");
+    await EventuallyAsync(host.PairingPortOpenAsync, 5);
+    Assert(!await host.PortOpenAsync());
+    var device = await AddComputer.RunAsync("127.0.0.1", "correct horse", "class-7", teacher, host.Config.Settings, host.PairingPort);
+    Assert(host.Saved is not null && host.Ui.Messages == 1);
+    Assert(device.Port == host.Config.Port && device.Enrollment.ClassroomId == "class-7" && device.Enrollment.Teacher.Role == TeacherRole.Teacher);
+    Assert(device.Enrollment.DeviceCertificateSha256 == CertificateTrust.Fingerprint(student));
+    await EventuallyAsync(host.PortOpenAsync, 5);
+    using var conn = new AgentConnection("127.0.0.1", "added", device, teacher, host.Config.Settings);
+    await conn.ConnectAsync();
+    Assert(!conn.HasPermission(ClassroomPermission.View));
+    Assert(await conn.StartLessonAsync(DateTimeOffset.UtcNow.AddMinutes(5)));
+    await conn.RequestScreenAsync(640, 50, 100);
+    await Eventually(() => conn.FramesReceived >= 2);
+    Assert(!conn.HasPermission(ClassroomPermission.Admin));
+});
+await Check("a wrong password adds nothing, and repeated guesses lock pairing", async () =>
+{
+    await using var host = new Host(Standard, enrolled: false);
+    host.Password = PasswordPairing.Create("correct horse");
+    await EventuallyAsync(host.PairingPortOpenAsync, 5);
+    for (int i = 0; i < 5; i++)
+    {
+        try { await AddComputer.RunAsync("127.0.0.1", "wrong password", "class-1", teacher, host.Config.Settings, host.PairingPort); throw new Exception("Accepted a wrong password"); }
+        catch (PairingRefusedException ex) { Assert(ex.Reason == "wrong-password"); }
+    }
+    Assert(host.Saved is null);
+    try { await AddComputer.RunAsync("127.0.0.1", "correct horse", "class-1", teacher, host.Config.Settings, host.PairingPort); throw new Exception("Lockout did not hold"); }
+    catch (PairingRefusedException ex) { Assert(ex.Reason == "locked"); }
+    Assert(host.Saved is null && !await host.PortOpenAsync());
+});
+await Check("a computer that does not know the password cannot pass as the real one", async () =>
+{
+    // A rogue listener offers the teacher its own hash of another password.
+    using var listener = new TcpListener(IPAddress.Loopback, 0);
+    listener.Start();
+    int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+    var rogueRequest = EnrollmentManager.CreateRequest(rogue, "Rogue");
+    var fake = Task.Run(async () =>
+    {
+        using var client = await listener.AcceptTcpClientAsync();
+        await using var tls = await SecureChannel.AcceptForPairingAsync(client, rogue, TimeSpan.FromSeconds(5), CancellationToken.None);
+        try { await PasswordPairing.AgentAsync(tls, PasswordPairing.Create("another password"), rogueRequest, SecureChannel.RemotePin(tls), 5900, CancellationToken.None); }
+        catch (AuthenticationException) { }
+    });
+    var settings = new ClassMonitor.Shared.Settings.SchoolSettings();
+    try { await AddComputer.RunAsync("127.0.0.1", "correct horse", "class-1", teacher, settings, port); throw new Exception("Trusted a rogue computer"); }
+    catch (PairingRefusedException) { }
+    await fake.WaitAsync(TimeSpan.FromSeconds(5));
+});
+await Check("the teacher refuses a computer that cannot prove the password, and sends it nothing", async () =>
+{
+    using var listener = new TcpListener(IPAddress.Loopback, 0);
+    listener.Start();
+    int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+    bool sentEnrollment = false;
+    var rogueRequest = EnrollmentManager.CreateRequest(rogue, "Rogue");
+    // It accepts the teacher's proof without checking and answers with a made-up one.
+    var fake = Task.Run(async () =>
+    {
+        using var client = await listener.AcceptTcpClientAsync();
+        await using var tls = await SecureChannel.AcceptForPairingAsync(client, rogue, TimeSpan.FromSeconds(5), CancellationToken.None);
+        await Frame.ReadAsync(tls);
+        await Frame.WriteJsonAsync(tls, MsgType.PairChallenge, new PairChallenge(Convert.ToBase64String(new byte[16]), 100_000, Security.NewNonce()));
+        await Frame.ReadAsync(tls);
+        await Frame.WriteJsonAsync(tls, MsgType.PairAccepted, new PairAccepted(Convert.ToBase64String(new byte[32]), rogueRequest, 5900));
+        try { sentEnrollment = (await Frame.ReadAsync(tls))?.Type == MsgType.PairEnrollment; }
+        catch (Exception ex) when (ex is IOException or OperationCanceledException) { }
+    });
+    try { await AddComputer.RunAsync("127.0.0.1", "correct horse", "class-1", teacher, new ClassMonitor.Shared.Settings.SchoolSettings(), port); throw new Exception("Trusted a computer without proof"); }
+    catch (AuthenticationException) { }
+    await fake.WaitAsync(TimeSpan.FromSeconds(5));
+    Assert(!sentEnrollment);
+});
+await Check("the proofs are bound to both certificates, so a machine in the middle fails", () =>
+{
+    byte[] key = RandomNumberGenerator.GetBytes(32);
+    string pinA = CertificateTrust.Fingerprint(student), pinT = CertificateTrust.Fingerprint(teacher), pinX = CertificateTrust.Fingerprint(rogue);
+    string real = PasswordPairing.Proof(key, "teacher", "n1", "n2", pinA, pinT);
+    Assert(real == PasswordPairing.Proof(key, "teacher", "n1", "n2", pinA.ToLowerInvariant(), pinT));
+    Assert(real != PasswordPairing.Proof(key, "teacher", "n1", "n2", pinX, pinT));
+    Assert(real != PasswordPairing.Proof(key, "teacher", "n1", "n2", pinA, pinX));
+    Assert(real != PasswordPairing.Proof(key, "agent", "n1", "n2", pinA, pinT));
+    Assert(real != PasswordPairing.Proof(key, "teacher", "n3", "n2", pinA, pinT));
+    return Task.CompletedTask;
+});
+await Check("a password cannot grant the school administrator role", async () =>
+{
+    await using var host = new Host(Standard, enrolled: false);
+    host.Password = PasswordPairing.Create("correct horse");
+    await EventuallyAsync(host.PairingPortOpenAsync, 5);
+    using var client = new TcpClient();
+    await client.ConnectAsync(IPAddress.Loopback, host.PairingPort);
+    await using var tls = await SecureChannel.ConnectForPairingAsync(client, teacher, TimeSpan.FromSeconds(5), CancellationToken.None);
+    try
+    {
+        await PasswordPairing.TeacherAsync<int>(tls, "correct horse", CertificateTrust.Fingerprint(teacher), SecureChannel.RemotePin(tls), (request, port) =>
+        {
+            var (document, _) = EnrollmentWorkflow.Create(request, teacher, new EnrollmentChoice("127.0.0.1", port, "school-1", "class-1", "Teacher", TeacherRole.SchoolAdmin, ClassroomPermission.Admin, DateTimeOffset.UtcNow.AddDays(1)));
+            return (document, 0);
+        }, CancellationToken.None);
+        throw new Exception("Accepted the administrator role");
+    }
+    catch (PairingRefusedException ex) { Assert(ex.Reason == "role-refused"); }
+    Assert(host.Saved is null);
+});
+await Check("the stored password record does not contain the password and short ones are refused", () =>
+{
+    var record = PasswordPairing.Create("correct horse");
+    string json = System.Text.Json.JsonSerializer.Serialize(record);
+    Assert(!json.Contains("correct") && !json.Contains("horse") && record.Iterations >= 600_000);
+    Assert(PasswordPairing.Create("correct horse").VerifierBase64 != record.VerifierBase64);
+    Reject(() => PasswordPairing.Create("short"));
+    Reject(() => PasswordPairing.Create(""));
+    return Task.CompletedTask;
 });
 await Check("enrolled connection captures nothing until a lesson starts", async () =>
 {
@@ -663,6 +858,9 @@ sealed class Host : IAsyncDisposable
     public PairedDevice Device { get; }
     public string AuditPath { get; }
     public volatile DeviceEnrollment? Policy;
+    public volatile PairingPassword? Password;
+    public volatile ManagedEnrollment? Saved;
+    public int PairingPort { get; }
 
     public Host(ClassroomPermission permissions, bool enrolled = true, X509Certificate2? identity = null, int healthSeconds = 15)
     {
@@ -687,8 +885,18 @@ sealed class Host : IAsyncDisposable
         Enrollment = EnrollmentManager.ValidatePackage(package, request.CertificateSha256, CertificateTrust.Fingerprint(_teacher));
         Device = new PairedDevice("127.0.0.1", Config.Port, Enrollment, request.PublicCertificateBase64);
         Policy = enrolled ? Enrollment : null;
+        using (var probe = new TcpListener(IPAddress.Loopback, 0))
+        {
+            probe.Start();
+            PairingPort = ((IPEndPoint)probe.LocalEndpoint).Port;
+        }
         _server = new AgentServer(Ui, Config, identity ?? _student, () => Policy, Restrictions, Capture.Jpeg,
-            new AgentOperations(Operations.Input, command => { Operations.ClearedBeforePower = Restrictions.Cleared > 0; Operations.Power(command); }, Operations.Run, Operations.Release), AuditPath);
+            new AgentOperations(Operations.Input, command => { Operations.ClearedBeforePower = Restrictions.Cleared > 0; Operations.Power(command); }, Operations.Run, Operations.Release), AuditPath,
+            () => Password, document =>
+            {
+                Saved = document;
+                Policy = EnrollmentManager.ValidatePackage(document.Package, document.DeviceFingerprint, document.TeacherFingerprint);
+            }, PairingPort);
         _server.Start();
     }
 
@@ -708,10 +916,12 @@ sealed class Host : IAsyncDisposable
         return conn;
     }
 
-    public async Task<bool> PortOpenAsync()
+    public Task<bool> PortOpenAsync() => OpenAsync(Config.Port);
+    public Task<bool> PairingPortOpenAsync() => OpenAsync(PairingPort);
+    private static async Task<bool> OpenAsync(int port)
     {
         using var client = new TcpClient();
-        try { await client.ConnectAsync(IPAddress.Loopback, Config.Port); return true; }
+        try { await client.ConnectAsync(IPAddress.Loopback, port); return true; }
         catch (SocketException) { return false; }
     }
 

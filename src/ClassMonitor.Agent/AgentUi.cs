@@ -163,9 +163,10 @@ internal sealed class AgentUi : ApplicationContext, IAgentInteraction
     {
         try
         {
-            var enrollment = ClassMonitor.Shared.Management.ManagedEnrollmentStore.Load(AgentEnrollment.DevicePin());
+            string pin = AgentEnrollment.DevicePin();
+            var enrollment = ClassMonitor.Shared.Management.ManagedEnrollmentStore.Load(pin) ?? ClassMonitor.Shared.Management.LocalEnrollmentStore.Load(pin);
             return enrollment is null
-                ? "Not enrolled / الجهاز غير مسجل"
+                ? "Waiting for the teacher to add this computer / بانتظار إضافة المعلم"
                 : $"Enrolled: {enrollment.Teacher.DisplayName} / {enrollment.ClassroomId}";
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or System.Text.Json.JsonException

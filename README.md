@@ -38,9 +38,9 @@ Use only on machines **you are authorized to administer**, with users **aware** 
 running. The agent shows a **persistent tray icon** on purpose. Do not use it for covert
 surveillance of people without authority or consent.
 
-> 🔒 الأمان: لا توجد كلمة مرور مشتركة. يعمل كل جهاز طالب بعد **تسجيل صريح** يوافق عليه مسؤول، والاتصال **TLS متبادل** مرتبط ببصمتَي
-> الجهازين، ولا يُرى شيء ولا يُنفَّذ أمر إلا خلال **درس** بدأه المعلم وضمن الصلاحيات الممنوحة. راجع [طريقة النشر](dist/DEPLOY.txt).
-> Security: there is no shared password. Each student computer works only after **explicit enrollment** approved by an administrator.
+> 🔒 الأمان: لا توجد كلمة مرور افتراضية. تختار كلمة مرور عند تثبيت كل جهاز طالب، ويضيفه المعلم بعنوانه وكلمة مروره، ولا تعرض لوحة المعلم إلا ما أضفته.
+> الاتصال **TLS متبادل** مرتبط ببصمتَي الجهازين، ولا يُرى شيء ولا يُنفَّذ أمر إلا خلال **درس** بدأه المعلم. راجع [طريقة النشر](dist/DEPLOY.txt).
+> Security: there is no default password. You choose a password when installing each student computer, and the teacher adds it with its address and that password. The console shows only computers you added.
 > Connections use **mutual TLS** pinned to both identities, and nothing is viewed or controlled outside a **lesson** the teacher started,
 > within the granted permissions. See the [deployment steps](dist/DEPLOY.txt) and [security notes](docs/SECURITY.md).
 

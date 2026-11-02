@@ -12,7 +12,7 @@ Use isolated branches/worktrees with explicit file ownership. Do not let externa
 
 - Monitoring and commands require enrolled device trust, mutually authenticated TLS, valid classroom scope and an authorized active lesson.
 - Fail closed on missing trust, invalid settings, expired authorization, malformed protocol or ambiguous identity. No default shared password, trust-all certificate callback, covert operation, keylogging, arbitrary shell or OS protection bypass.
-- Persist identities using Windows key storage; keep trust policy administrator-controlled. Never log class secrets, frame content, chat/file contents or private keys.
+- Persist identities using Windows key storage. Administrator-controlled trust is required for power and program commands. The owner chose (2026-11-02) password-based adding, stored in the student's profile, for classroom capabilities; never add a default password. Never log class secrets, frame content, chat/file contents or private keys.
 - Keep student status visible. Mark recording and remote assistance explicitly. Restore owned restrictions when a session ends.
 - Validate every user-editable setting, apply it to real behavior, persist it atomically and test it. Do not expose inert placeholder controls as working settings.
 - Tests must use temporary directories and loopback peers; mock disruptive system operations. No visible test fixture unless the user explicitly requests it. Screen checks require `--visual`.
