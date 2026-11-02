@@ -2,11 +2,14 @@ using System.Drawing.Imaging;
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
-using System.Reflection;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading.Channels;
+using ClassMonitor.Agent;
 using ClassMonitor.Shared;
+using ClassMonitor.Shared.Management;
+using ClassMonitor.Shared.Sessions;
+using ClassMonitor.Shared.Settings;
 using ClassMonitor.Teacher;
 
 internal static class TransportChecks
@@ -14,24 +17,41 @@ internal static class TransportChecks
     public static async Task RunAsync(bool captureDesktop = false)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(40));
-        using var rsa = RSA.Create(2048);
-        using var generated = new CertificateRequest("CN=ClassMonitor test", rsa,
-            HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1)
-            .CreateSelfSigned(DateTimeOffset.Now.AddDays(-1), DateTimeOffset.Now.AddDays(1));
-        using var cert = X509CertificateLoader.LoadPkcs12(generated.Export(X509ContentType.Pfx), "",
-            X509KeyStorageFlags.UserKeySet | X509KeyStorageFlags.Exportable);
+        using var cert = Identity("ClassMonitor test student");
+        using var teacher = Identity("ClassMonitor test teacher");
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         int port = ((IPEndPoint)listener.LocalEndpoint).Port;
-        byte[] key = Security.DeriveKey("local-test-only");
-        await Task.WhenAll(Enumerable.Range(0, 3).Select(CheckClientAsync));
-        Console.WriteLine($"PASS: 3 simultaneous TLS clients; 30 {(captureDesktop ? "desktop captures" : "synthetic frames")} decoded and rendered in tiles and live views.");
+        listener.Stop();
+        var request = EnrollmentManager.CreateRequest(cert, "Test device");
+        var package = EnrollmentManager.CreatePackage(request, teacher, "school", "class", "Teacher", TeacherRole.Teacher,
+            ClassroomPermission.View, DateTimeOffset.UtcNow.AddHours(1));
+        var enrollment = EnrollmentManager.ValidatePackage(package, request.CertificateSha256, CertificateTrust.Fingerprint(teacher));
+        var pairing = new PairedDevice("127.0.0.1", port, enrollment, request.PublicCertificateBase64);
+        var settings = new SchoolSettings();
+        var config = new AppConfig();
+        config.Settings.Network.AgentPort = port;
+        config.Settings.Network.DiscoveryEnabled = false;
+        byte[] Synthetic(int width, int quality, int monitor)
+        {
+            using var bitmap = new Bitmap(800, 600);
+            using (var g = Graphics.FromImage(bitmap)) g.Clear(Color.Magenta);
+            using var ms = new MemoryStream();
+            bitmap.Save(ms, ImageFormat.Jpeg);
+            return ms.ToArray();
+        }
+        // One lesson owner per device: the three runs are sequential against the real agent server.
+        for (int index = 0; index < 3; index++) await CheckClientAsync(index);
+        Console.WriteLine($"PASS: 3 enrolled mutual-TLS lessons; 30 {(captureDesktop ? "desktop captures" : "synthetic frames")} decoded and rendered in tiles and live views.");
 
         async Task CheckClientAsync(int clientIndex)
         {
-            using var sessionStop = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
-            var server = ServeAsync(sessionStop.Token);
-            using var conn = new AgentConnection("127.0.0.1", $"Test {clientIndex}", port, key);
+            string audit = Path.Combine(Path.GetTempPath(), "ClassMonitor.ScreenStreaming", Guid.NewGuid().ToString("N"), "audit.jsonl");
+            using var ui = new AgentUi();
+            using var server = new AgentServer(ui, config, cert, () => enrollment, new NoRestrictions(), captureDesktop ? null : Synthetic, null, audit);
+            server.Start();
+            await Task.Delay(300, timeout.Token);
+            using var conn = new AgentConnection("127.0.0.1", $"Test {clientIndex}", pairing, teacher, settings);
             var frames = Channel.CreateUnbounded<byte[]>();
             conn.FrameReceived += (_, jpeg) => frames.Writer.TryWrite(jpeg);
             using var tile = new AgentTile(conn, new Size(400, 260));
@@ -39,6 +59,8 @@ internal static class TransportChecks
             live.Show();
             Program.ShowFixture();
             await conn.ConnectAsync().WaitAsync(timeout.Token);
+            if (!await conn.StartLessonAsync(DateTimeOffset.UtcNow.AddMinutes(5))) throw new Exception("Lesson refused");
+            await conn.RequestScreenAsync(1280, 75, 200);
             for (int i = 0; i < 10; i++)
             {
                 byte[] jpeg = await frames.Reader.ReadAsync(timeout.Token);
@@ -48,48 +70,25 @@ internal static class TransportChecks
             live.Close();
             if (conn.FramesReceived < 10 || !live.BuildDiagnostics().Contains("Decoded image:"))
                 throw new Exception("Teacher frame diagnostics do not match the received stream");
-            if (captureDesktop) sessionStop.Cancel();
-            await server;
             Console.WriteLine($"Client {clientIndex + 1}: PASS (10 frames, tile + live view)");
         }
+    }
 
-        async Task ServeAsync(CancellationToken sessionToken)
-        {
-            using var client = await listener.AcceptTcpClientAsync(timeout.Token);
-            using var ssl = new SslStream(client.GetStream());
-            await ssl.AuthenticateAsServerAsync(cert);
-            string nonce = Security.NewNonce();
-            await Frame.WriteJsonAsync(ssl, MsgType.AuthHello, new AuthHello(nonce), timeout.Token);
-            var request = await Frame.ReadAsync(ssl, timeout.Token);
-            var auth = Frame.ReadJson<AuthRequest>(request!.Value.Payload);
-            if (!Security.ProofsEqual(auth.ProofT, Security.Proof(key, "teacher", nonce, auth.NonceT)))
-                throw new Exception("Authentication failed");
-            await Frame.WriteJsonAsync(ssl, MsgType.AuthResult,
-                new AuthResult(true, Security.Proof(key, "agent", nonce, auth.NonceT)), timeout.Token);
-            if (captureDesktop)
-            {
-                // Run the production streaming session after the authenticated TLS handshake.
-                // No restriction commands are sent; omit Restrictions to avoid changing host/firewall settings.
-                using var ui = new ClassMonitor.Agent.AgentUi(false);
-                var sessionType = typeof(ClassMonitor.Agent.AgentServer).GetNestedType("Session", BindingFlags.NonPublic)!;
-                var session = Activator.CreateInstance(sessionType, client, ssl, ui, null)!;
-                await Task.Run(() => (Task)sessionType.GetMethod("RunAsync")!.Invoke(session, new object[] { sessionToken })!);
-                return;
-            }
-            await Frame.WriteJsonAsync(ssl, MsgType.Hello, new HelloInfo("Test", "Test"), timeout.Token);
-            await Frame.WriteJsonAsync(ssl, MsgType.MonitorsInfo,
-                new MonitorsMsg(new[] { new MonitorInfo(0, 0, 0, 800, 600, true) }), timeout.Token);
-            while ((await Frame.ReadAsync(ssl, timeout.Token))?.Type != MsgType.ScreenRequest) { }
-            using var bitmap = new Bitmap(800, 600);
-            using (var g = Graphics.FromImage(bitmap)) g.Clear(Color.Magenta);
-            using var ms = new MemoryStream();
-            bitmap.Save(ms, ImageFormat.Jpeg);
-            for (int i = 0; i < 10; i++)
-            {
-                await Frame.WriteAsync(ssl, MsgType.ScreenFrame, ms.ToArray(), timeout.Token);
-                await Task.Delay(80, timeout.Token);
-            }
-        }
+    private static X509Certificate2 Identity(string name)
+    {
+        using var rsa = RSA.Create(2048);
+        var request = new CertificateRequest("CN=" + name, rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(new OidCollection { new("1.3.6.1.5.5.7.3.1"), new("1.3.6.1.5.5.7.3.2") }, false));
+        using var generated = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow.AddDays(1));
+        return X509CertificateLoader.LoadPkcs12(generated.Export(X509ContentType.Pfx), "",
+            X509KeyStorageFlags.UserKeySet | X509KeyStorageFlags.Exportable);
+    }
+
+    private sealed class NoRestrictions : ISessionRestrictions
+    {
+        public void Apply(RestrictCmd command) { }
+        public void Clear() { }
+        public void Dispose() { }
     }
 
     internal static async Task CheckViewsAsync(AgentTile tile, LiveViewForm live, bool captureDesktop, CancellationToken ct)

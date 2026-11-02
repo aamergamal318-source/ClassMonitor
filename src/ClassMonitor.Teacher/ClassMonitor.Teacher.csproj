@@ -16,6 +16,7 @@
     <ProjectReference Include="..\ClassMonitor.Shared\ClassMonitor.Shared.csproj" />
     <Compile Include="../ClassMonitor.Desktop/UpdateController.cs" Link="UpdateController.cs" />
     <InternalsVisibleTo Include="ScreenStreaming" />
+    <InternalsVisibleTo Include="IntegrationChecks" />
   </ItemGroup>
 
   <ItemGroup>

@@ -23,6 +23,19 @@ public static class CertificateTrust
         return CryptographicOperations.FixedTimeEquals(expected, actual);
     }
 
+    /// <summary>Fingerprint of a saved public certificate regardless of its validity period.</summary>
+    public static string FingerprintOfPublic(string base64)
+    {
+        if (string.IsNullOrWhiteSpace(base64) || base64.Length > 16_384) throw new InvalidDataException("certificate.invalid");
+        try
+        {
+            using var certificate = X509CertificateLoader.LoadCertificate(Convert.FromBase64String(base64));
+            return Fingerprint(certificate);
+        }
+        catch (Exception ex) when (ex is FormatException or CryptographicException)
+        { throw new InvalidDataException("certificate.invalid", ex); }
+    }
+
     public static X509Certificate2 ReadPublicCertificate(string base64)
     {
         if (string.IsNullOrWhiteSpace(base64) || base64.Length > 16_384)

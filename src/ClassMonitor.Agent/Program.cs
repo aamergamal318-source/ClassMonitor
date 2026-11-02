@@ -15,6 +15,12 @@ internal static class Program
             return;
         }
 
+        if (args.Length == 2 && args[0].Equals("--enrollment-request", StringComparison.OrdinalIgnoreCase))
+        {
+            AgentEnrollment.WriteRequest(args[1]);
+            return;
+        }
+
         // Install/uninstall/status verbs: do the action and exit (no agent UI).
         if (args.Length > 0 && args[0].StartsWith("--", StringComparison.Ordinal))
         {
@@ -22,12 +28,26 @@ internal static class Program
             return;
         }
 
-        var config = AppConfig.Load(AppConfig.AgentConfigPath);
+        AppConfig config;
+        try { config = AppConfig.Load(AppConfig.AgentConfigPath); }
+        catch (ArgumentException ex) { Stop(ex.Message); return; }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException) { Stop(ex.Message); return; }
 
-        using var ui = new AgentUi(config.AgentVisible);
+        // Website and internet blocks left by a crash or restart are removed if this start has the rights to do so.
+        if (ClassMonitor.Shared.Management.ManagedEnrollmentStore.IsAdministrator())
+        {
+            try { ClassMonitor.Shared.Management.RestrictionCleanup.Sweep(); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception) { }
+        }
+
+        // The tray icon is always visible; the legacy AgentVisible value is read but cannot hide the agent.
+        using var ui = new AgentUi();
         using var server = new AgentServer(ui, config);
         server.Start();
 
         Application.Run(ui); // runs until the tray "Exit" item is chosen
     }
+
+    private static void Stop(string message) =>
+        MessageBox.Show(message, "ClassMonitor Agent", MessageBoxButtons.OK, MessageBoxIcon.Error);
 }

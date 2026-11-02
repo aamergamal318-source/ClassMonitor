@@ -1,15 +1,21 @@
 # Local per-user installer
 
-This original WinForms bootstrapper installs **one chosen component** into
-`%LOCALAPPDATA%\Programs\ClassMonitor\Teacher` or `...\Agent`. It requires an
-explicit checkbox and Install click. It does not launch the installed agent,
-enroll a device, change firewall rules, register a service/scheduled task or enable
-startup. School enrollment and administrator-controlled trust remain separate.
+This original WinForms bootstrapper is the one file people download. It installs **one
+chosen component** into `%LOCALAPPDATA%\Programs\ClassMonitor\Teacher` or `...\Agent`,
+for the current Windows account, after an explicit checkbox and Install click. It adds
+Start menu and optional desktop shortcuts. Sign-in start and a firewall rule happen only
+when ticked, and the firewall rule shows the Windows administrator prompt. It never
+enrolls a device or starts monitoring.
+
+Its administrator tools run elevated from this copy of setup, never from the student's
+writable program folder: import an enrollment file after comparing fingerprints, and
+remove website and internet blocks left by an interrupted lesson. Run them from a trusted
+copy that students cannot change.
 
 Build after the product ZIP has been created:
 
 ```powershell
-dotnet publish installer/ClassMonitor.Installer -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -p:PayloadPath="C:\absolute\ClassMonitor-windows-x64.zip" -o release/installer
+dotnet publish installer/ClassMonitor.Installer -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=None -p:DebugSymbols=false -p:PayloadPath="C:\absolute\ClassMonitor-windows-x64.zip" -o release/installer
 ```
 
 The ZIP must have exact entries:
@@ -50,11 +56,11 @@ directories. They exercise Teacher/Agent install-upgrade-uninstall, rollback,
 locked files, exact ZIP extraction, invalid versions, unsafe receipts and the
 PowerShell uninstall worker with registry operations disabled.
 
-Production setup registers a per-user Apps entry. Uninstall prompts explicitly,
-starts a hidden PowerShell worker, waits for setup to exit and removes only names
-owned by the component's validated receipt. Close running ClassMonitor processes
-before upgrading/removing. It preserves settings, recordings, enrollment,
-unrelated files and previous update backups. It rejects filesystem roots and
+Production setup registers a per-user Apps entry that runs the installed `Uninstall.ps1`.
+It asks for confirmation and removes only names owned by the component's validated receipt,
+its shortcuts, its sign-in start value, its firewall rule (with the administrator prompt)
+and previous-version copies kept by updates. Close running ClassMonitor processes before
+upgrading/removing. It preserves settings, recordings, enrollment and unrelated files. It rejects filesystem roots and
 linked/junction directories. Failed rollback retains recovery copies rather than
 deleting them. It is not an MSI, school-wide service installer, GPO/Intune package,
 ACL provisioning tool or production certification.

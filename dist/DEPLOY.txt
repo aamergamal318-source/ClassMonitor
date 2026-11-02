@@ -3,38 +3,70 @@ ClassMonitor — نشر / Deployment
 
 الاستخدام المسؤول · Responsible use
 -----------------------------------
-هذه الأداة للمراقبة الصفّية المعلنة على أجهزة تملك صلاحية إدارتها، ومع علم المستخدمين.
-الوكيل يُظهر أيقونة دائمة في شريط المهام (شفّاف عمداً). لا تستخدمه لمراقبة شخص دون علمه.
+هذه الأداة لإدارة الصف المعلنة على أجهزة تملك صلاحية إدارتها، ومع علم المستخدمين.
+تطبيق الطالب يُظهر أيقونة دائمة بجانب الساعة، ولا يمكن إخفاؤها. لا تستخدمه لمراقبة شخص دون علمه.
 
-Use only on machines you are authorized to administer, with the users aware. The agent
-shows a persistent tray icon on purpose. Do not use it to monitor anyone covertly.
+Use only on computers you are authorized to administer, with their users aware. The student
+application always shows a tray icon and cannot be hidden. Do not use it to monitor anyone covertly.
 
-الملفات · Files
----------------
-- agent/ClassMonitorAgent.exe      → جهاز الطالب (student machine)
-- teacher/ClassMonitorTeacher.exe  → جهاز المعلّم (teacher machine)
+الملف · The file
+----------------
+ClassMonitorSetup.exe هو الملف الوحيد المطلوب. لا يحتاج إلى تثبيت .NET أو إلى إنترنت.
+ClassMonitorSetup.exe is the only file you need. It needs neither .NET nor internet access.
 
-كلاهما مستقل (self-contained) — لا يحتاج تثبيت .NET على الجهاز.
+احفظ نسخة موثوقة منه في مكان لا يستطيع الطلاب تعديله (مثل قرص USB للمسؤول).
+Keep a trusted copy where students cannot change it, such as the administrator's USB drive.
 
 الخطوات · Steps
 ---------------
-1) على جهاز المعلّم: شغّل ClassMonitorTeacher.exe.
-2) على كل جهاز طالب: شغّل ClassMonitorAgent.exe (يظهر في شريط المهام).
-   - للتشغيل التلقائي عند الدخول: انقر يمين الأيقونة > "Start automatically at logon"
-     (أو شغّل: ClassMonitorAgent.exe --install) — يتطلب صلاحيات مدير.
-   - لحجب المواقع/الإنترنت فعلياً، شغّل الوكيل كمسؤول (Run as administrator).
-3) الأجهزة تظهر تلقائياً في لوحة المعلّم خلال ثوانٍ (اكتشاف على نفس الشبكة المحلية).
+1) جهاز المعلم: شغّل ClassMonitorSetup.exe واختر Teacher console.
+   Teacher computer: run ClassMonitorSetup.exe and choose Teacher console.
 
-الأمان · Security
+2) جهاز الطالب: شغّل ClassMonitorSetup.exe بحساب الطالب واختر Student agent.
+   للأجهزة المشتركة: كرّر الخطوتين 2 و3 لكل حساب Windows.
+   Student computer: run it under the student's account and choose Student agent.
+   Shared computers: repeat steps 2 and 3 for each Windows account.
+   الخياران (يعملان فقط إذا فعّلتهما) · Options, only if you tick them:
+   - التشغيل عند تسجيل الدخول · Start when I sign in
+   - السماح عبر جدار الحماية (يطلب صلاحية مسؤول) · Allow through Windows Firewall (asks for an administrator)
+
+3) التسجيل · Enrollment
+   أ) الطالب: من أيقونة البرنامج اختر Export enrollment request وأعطِ الملف للمعلم.
+      Student: from the tray icon choose Export enrollment request and give the file to the teacher.
+   ب) المعلم: اضغط Enroll device، واختر الملف، وحدد الصف والصلاحيات، ثم احفظ ملف التسجيل.
+      Teacher: use Enroll device, choose the file, set the classroom and permissions, save the enrollment file.
+   ج) المسؤول: على جهاز الطالب شغّل نسختك الموثوقة من ClassMonitorSetup.exe، واختر
+      Import enrollment file، وقارن البصمتين قبل الموافقة.
+      Administrator: on the student computer run your trusted copy of ClassMonitorSetup.exe, choose
+      Import enrollment file, and compare both fingerprints before accepting.
+   ملف التسجيل حساس: انقله بطريقة معتمدة واحذف نسخه بعد الاستيراد.
+   The enrollment file is sensitive: move it by an approved channel and delete copies afterwards.
+
+4) الدرس · Lesson
+   المعلم يضغط Start lesson. لا يُرى أي شيء ولا يُنفَّذ أي أمر قبل بدء الدرس، وكل شيء يتوقف عند نهايته.
+   The teacher uses Start lesson. Nothing is viewed or controlled before a lesson, and everything stops when it ends.
+
+التحديث · Updates
 -----------------
-- الاتصال مشفّر TLS ومصادَق بكلمة مرور مشتركة.
-- كلمة المرور الافتراضية: classmonitor
-- غيّرها من زر "Settings" في لوحة المعلّم، واضبط نفس القيمة على كل وكيل في:
-  %ProgramData%\ClassMonitor\agent.json  (الحقل "Password")
-- يجب أن تتطابق كلمة المرور على الطرفين وإلا رُفض الاتصال.
+التحديثات تأتي من داخل البرنامج. لا تحتاج إلى إعادة تشغيل المثبّت.
+Updates come from inside the program. You do not need to run setup again.
+
+الترقية من الإصدارات الأقدم · Upgrading from earlier versions
+-------------------------------------------------------------
+كلمة المرور المشتركة لم تعد مستخدمة. يجب تسجيل كل جهاز طالب مرة واحدة كما في الخطوة 3.
+The shared password is no longer used. Every student computer must be enrolled once, as in step 3.
+
+قيود المواقع والإنترنت · Website and internet restrictions
+----------------------------------------------------------
+تحتاج هذه القيود إلى تطبيق طالب يعمل بصلاحية مسؤول، وبدونها يتلقى المعلم رسالة بالرفض.
+لا تشغّل نسخة في مجلد الطالب بصلاحية مسؤول إلا إذا كان الجهاز تحت إدارة تمنع الطالب من تعديلها.
+إذا بقيت قيود بعد انقطاع مفاجئ، اختر Remove leftover restrictions في المثبّت.
+These restrictions need a student application running as administrator; otherwise the teacher is told it was refused.
+Do not run a copy from the student's folder as administrator unless students cannot change that folder.
+If blocks remain after a sudden interruption, use Remove leftover restrictions in setup.
 
 الشبكة · Network
 ----------------
-- اسمح بالمنفذين عبر جدار حماية Windows على الشبكة الخاصة:
-  TCP 5900  و  UDP 5901
-- يجب أن يكون المعلّم والطلاب على نفس الشبكة المحلية (LAN) لعمل الاكتشاف.
+- TCP 5900 يدخل إلى جهاز الطالب · inbound on the student computer
+- UDP 5901 يدخل إلى جهاز المعلم للاكتشاف · inbound on the teacher computer, for discovery
+يجب أن يكون المعلم والطلاب على نفس الشبكة المحلية. · Teacher and students must share a local network.

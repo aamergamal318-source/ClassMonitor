@@ -43,6 +43,20 @@ if (args.Length == 1 && args[0] == "--live-check")
     return 0;
 }
 
+if (args.Length == 1 && args[0] == "--live-download")
+{
+    // Real public release through the same check, download, hash and extraction path the applications use. Nothing is installed.
+    using var service = new ReleaseUpdater();
+    var check = await service.CheckAsync(new Version(0, 0, 0));
+    if (check.State != UpdateState.Available) throw new Exception(check.Message);
+    foreach (var component in new[] { UpdateComponent.Teacher, UpdateComponent.Agent })
+    {
+        var staged = await service.StageAsync(check.Release!, component);
+        Console.WriteLine($"PASS: downloaded and verified {component} {check.Release!.Version}, {check.Release.Size} bytes, SHA256={staged.Sha256}");
+    }
+    return 0;
+}
+
 string workerExecutable = args.Length == 2 && args[0] == "--worker" ? Path.GetFullPath(args[1])
     : Path.GetFullPath("src/ClassMonitor.Updater/bin/Release/net10.0/ClassMonitorUpdater.exe");
 
@@ -55,6 +69,50 @@ try
     {
         var check = ReleaseUpdater.ParseRelease(ReleaseJson("v2.0.0"), new Version(1, 1, 0, 0));
         Assert(check.State == UpdateState.Available && check.Release!.Version == new Version(2, 0, 0));
+        return Task.CompletedTask;
+    });
+    await Check("in-app update records its version in a setup-created installation", () =>
+    {
+        string folder = Path.Combine(root, "receipt"); Directory.CreateDirectory(folder);
+        string application = Path.Combine(folder, "ClassMonitorTeacher.exe");
+        File.Copy(workerExecutable, application);
+        string manifest = Path.Combine(folder, "install-manifest.json");
+        File.WriteAllText(manifest, "{\"Product\":\"ClassMonitor.ManagedDesktop\",\"Schema\":1,\"Component\":0,\"Version\":\"0.0.1\",\"Files\":{\"ClassMonitorTeacher.exe\":\"OLD\",\"LICENSE\":\"KEEP\"}}");
+        (string Component, string Version)? written = null;
+        UpdateInstaller.RecordInstalledVersion(application, "NEWHASH", (c, v) => written = (c, v));
+        using var receipt = JsonDocument.Parse(File.ReadAllText(manifest));
+        var v = ReleaseUpdater.CurrentVersion;
+        Assert(receipt.RootElement.GetProperty("Version").GetString() == v.ToString(3) && written == ("Teacher", v.ToString(3)));
+        var files = receipt.RootElement.GetProperty("Files");
+        Assert(files.GetProperty("ClassMonitorTeacher.exe").GetString() == "NEWHASH" && files.GetProperty("LICENSE").GetString() == "KEEP");
+        return Task.CompletedTask;
+    });
+    await Check("a damaged receipt cannot disturb a committed update", () =>
+    {
+        string folder = Path.Combine(root, "damaged"); Directory.CreateDirectory(folder);
+        string application = Path.Combine(folder, "ClassMonitorTeacher.exe");
+        File.Copy(workerExecutable, application);
+        string manifest = Path.Combine(folder, "install-manifest.json");
+        foreach (string damaged in new[] { "{\"Product\":7,\"Files\":{}}", "not json", "{\"Product\":\"ClassMonitor.ManagedDesktop\",\"Files\":{\"a\":1,\"a\":2}}" })
+        {
+            File.WriteAllText(manifest, damaged);
+            UpdateInstaller.RecordInstalledVersion(application, "HASH", (_, _) => { });
+        }
+        Assert(Directory.GetFiles(folder, "*.tmp").Length == 0);
+        return Task.CompletedTask;
+    });
+    await Check("portable copy and foreign receipt are left untouched", () =>
+    {
+        string folder = Path.Combine(root, "portable"); Directory.CreateDirectory(folder);
+        string application = Path.Combine(folder, "ClassMonitorAgent.exe");
+        File.Copy(workerExecutable, application);
+        bool wrote = false;
+        UpdateInstaller.RecordInstalledVersion(application, "HASH", (_, _) => wrote = true);
+        Assert(!wrote && !File.Exists(Path.Combine(folder, "install-manifest.json")));
+        string foreign = "{\"Product\":\"Other\",\"Files\":{}}";
+        File.WriteAllText(Path.Combine(folder, "install-manifest.json"), foreign);
+        UpdateInstaller.RecordInstalledVersion(application, "HASH", (_, _) => wrote = true);
+        Assert(!wrote && File.ReadAllText(Path.Combine(folder, "install-manifest.json")) == foreign);
         return Task.CompletedTask;
     });
     await Check("equal and older releases never downgrade", () =>

@@ -21,6 +21,29 @@ public static class InstallerCore
     public const string Product = "ClassMonitor.ManagedDesktop";
     public const string ManifestName = "install-manifest.json";
     public const long MaximumEntryBytes = 512L * 1024 * 1024;
+    public const string RunValueName = "ClassMonitorAgent";
+    private const int AgentTcpPort = 5900, DiscoveryUdpPort = 5901;
+    private static string Label(InstallComponent component) => component == InstallComponent.Teacher ? "ClassMonitor Teacher" : "ClassMonitor Student";
+    public static string ShortcutName(InstallComponent component) => Label(component) + ".lnk";
+    public static string FirewallRuleName(InstallComponent component, string userName) => $"{Label(component)} ({userName})";
+
+    /// <summary>A rule per Windows account and program: the student listens on TCP; the teacher receives discovery beacons.</summary>
+    public static string[] FirewallAddArguments(InstallComponent component, string application, string userName)
+    {
+        ApplicationName(component);
+        if (!Path.IsPathFullyQualified(application) || string.IsNullOrWhiteSpace(userName) || userName.IndexOfAny(new[] { '"', '\r', '\n' }) >= 0)
+            throw new InvalidDataException("Invalid firewall rule.");
+        return new[]
+        {
+            "advfirewall", "firewall", "add", "rule", "name=" + FirewallRuleName(component, userName), "dir=in", "action=allow",
+            "program=" + application, "enable=yes", "profile=domain,private", "remoteip=localsubnet",
+            component == InstallComponent.Teacher ? "protocol=UDP" : "protocol=TCP",
+            "localport=" + (component == InstallComponent.Teacher ? DiscoveryUdpPort : AgentTcpPort)
+        };
+    }
+
+    public static string UninstallCommand(string systemDirectory, string root) =>
+        $"\"{Path.Combine(systemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe")}\" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{Path.Combine(root, "Uninstall.ps1")}\"";
     public static string ApplicationName(InstallComponent component) => component switch
     {
         InstallComponent.Teacher => "ClassMonitorTeacher.exe", InstallComponent.Agent => "ClassMonitorAgent.exe",
@@ -28,13 +51,14 @@ public static class InstallerCore
     };
 
     public static InstallReceipt Install(Stream payload, InstallComponent component, string root, string version,
-        string installerExecutable, string uninstallScript, IInstallerRegistration registration)
+        string uninstallScript, IInstallerRegistration registration)
     {
         root = ValidateRoot(root);
         ApplicationName(component);
+        InstallReceipt? previous = null;
         if (Directory.Exists(root) && Directory.EnumerateFileSystemEntries(root).Any())
         {
-            var previous = ReadReceipt(root);
+            previous = ReadReceipt(root);
             if (previous.Component != component) throw new InvalidDataException("The directory belongs to another component.");
         }
         Directory.CreateDirectory(root);
@@ -58,8 +82,6 @@ public static class InstallerCore
             if (!Version.TryParse(version, out var expected) ||
                 new Version(info.FileMajorPart, info.FileMinorPart, info.FileBuildPart) != new Version(expected.Major, expected.Minor, Math.Max(0, expected.Build)))
                 throw new InvalidDataException("Package application version does not match installer version.");
-            CheckExecutable(installerExecutable);
-            File.Copy(installerExecutable, Path.Combine(staging, "ClassMonitorSetup.exe"));
             File.WriteAllText(Path.Combine(staging, "Uninstall.ps1"), uninstallScript);
             var hashes = Directory.GetFiles(staging).ToDictionary(path => Path.GetFileName(path)!, Hash);
             var receipt = new InstallReceipt(Product, 1, component, version, hashes);
@@ -82,6 +104,10 @@ public static class InstallerCore
             }
             registration.Register(receipt, root);
             cleanupBackup = true;
+            // Earlier builds kept a large setup copy here; it is no longer owned, so it does not linger after an upgrade.
+            foreach (string stale in previous?.Files.Keys.Except(receipt.Files.Keys) ?? Enumerable.Empty<string>())
+                try { File.Delete(Path.Combine(root, stale)); }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException) { /* Harmless leftover; never fail a committed install. */ }
             return receipt;
 
             void Extract(string entryName, string name, bool required)

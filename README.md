@@ -14,16 +14,16 @@ installation and restart. Earlier versions require one initial manual upgrade.
 
 المشروع متاح بترخيص [MIT](LICENSE): يمكنك تنزيل المصدر واستخدامه وتعديله وإعادة توزيعه وفق شروط الترخيص.
 لتنزيل المصدر من GitHub اختر **Code → Download ZIP**. للبناء والتشغيل اتبع قسم **Build & run** أدناه.
-إذا توفّرت نسخة جاهزة، ستجدها في قسم **Releases**؛ نزّل ملف ZIP وفك ضغطه، ثم اتبع [تعليمات النشر](dist/DEPLOY.txt).
+إذا توفّرت نسخة جاهزة، ستجدها في قسم **Releases**؛ نزّل **ClassMonitorSetup.exe** فهو الملف الوحيد المطلوب للمعلم والطالب، ثم اتبع [تعليمات النشر](dist/DEPLOY.txt).
 البرنامج مخصص لنظام Windows، والمراقبة تتطلب صلاحية إدارة الأجهزة وعلم مستخدميها.
 
-Licensed under [MIT](LICENSE). Download the source with **Code → Download ZIP**, or download a Windows package from **Releases** when available. See [deployment instructions](dist/DEPLOY.txt).
+Licensed under [MIT](LICENSE). Download the source with **Code → Download ZIP**, or download **ClassMonitorSetup.exe** from **Releases** when available; it is the only file needed for teacher and student computers. See [deployment instructions](dist/DEPLOY.txt).
 
 أداة أصلية لإدارة ومراقبة أجهزة صف دراسي / مختبر على شبكة محلية (LAN)، مكتوبة بلغة
-C# / .NET 9 لنظام Windows. هي تطبيق مستقل تمامًا، وليست مبنية على أي كود من برامج تجارية.
+C# / .NET 10 لنظام Windows. هي تطبيق مستقل تمامًا، وليست مبنية على أي كود من برامج تجارية.
 
 A from-scratch classroom/lab monitoring and management tool for a trusted LAN, written in
-C# / .NET 9 for Windows. Entirely original code — not derived from any commercial product.
+C# / .NET 10 for Windows. Entirely original code — not derived from any commercial product.
 
 ---
 
@@ -38,13 +38,11 @@ Use only on machines **you are authorized to administer**, with users **aware** 
 running. The agent shows a **persistent tray icon** on purpose. Do not use it for covert
 surveillance of people without authority or consent.
 
-> 🔒 الأمان: كل اتصال الآن **مشفّر بـ TLS** ويُصادَق بـ**كلمة مرور الصف المشتركة** (تحدٍّ/استجابة
-> HMAC — كلمة المرور لا تُرسَل). كلمة المرور الافتراضية `classmonitor`؛ غيّرها من `⚙ Settings` في
-> اللوحة، واضبط الوكلاء على نفس القيمة في `%ProgramData%\ClassMonitor\agent.json`.
-> Security: every connection is now **TLS-encrypted** and authenticated with the **shared class
-> password** (HMAC challenge-response; the password never crosses the wire). Default password is
-> `classmonitor` — change it via `⚙ Settings`, and set the same value on the agents in
-> `%ProgramData%\ClassMonitor\agent.json`.
+> 🔒 الأمان: لا توجد كلمة مرور مشتركة. يعمل كل جهاز طالب بعد **تسجيل صريح** يوافق عليه مسؤول، والاتصال **TLS متبادل** مرتبط ببصمتَي
+> الجهازين، ولا يُرى شيء ولا يُنفَّذ أمر إلا خلال **درس** بدأه المعلم وضمن الصلاحيات الممنوحة. راجع [طريقة النشر](dist/DEPLOY.txt).
+> Security: there is no shared password. Each student computer works only after **explicit enrollment** approved by an administrator.
+> Connections use **mutual TLS** pinned to both identities, and nothing is viewed or controlled outside a **lesson** the teacher started,
+> within the granted permissions. See the [deployment steps](dist/DEPLOY.txt) and [security notes](docs/SECURITY.md).
 
 ---
 

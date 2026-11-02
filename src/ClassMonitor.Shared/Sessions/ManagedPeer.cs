@@ -6,13 +6,17 @@ public sealed record PairedDevice(string Host, int Port, DeviceEnrollment Enroll
 public sealed record ManagedEnrollment(EnrollmentPackage Package, string DeviceFingerprint, string TeacherFingerprint);
 public sealed record StateRequest(string RequestId, bool Active);
 public sealed record StateResult(string RequestId, bool Ok, string Message);
+public sealed record SessionEndNotice(bool EndedByStudent);
 public sealed record SessionHealth(string SessionId, bool Active, bool Assisting, bool Recording);
+public sealed record ManagedCommand(string RequestId, MsgType Operation, byte[] Payload);
+public sealed record QuestionCmd(string QuestionId, string Text);
+public sealed record AnswerMsg(string QuestionId, string Text);
 
 public static class CommandPolicy
 {
     public static ClassroomPermission Required(MsgType type, byte[] payload) => type switch
     {
-        MsgType.ScreenRequest => ClassroomPermission.View,
+        MsgType.ScreenRequest or MsgType.StudentShared => ClassroomPermission.View,
         MsgType.RemoteInput or MsgType.AssistanceState => ClassroomPermission.Assist,
         MsgType.TeacherFrame or MsgType.TeacherBroadcast => ClassroomPermission.Present,
         MsgType.ShowMessage or MsgType.Chat or MsgType.Question or MsgType.Answer => ClassroomPermission.Message,

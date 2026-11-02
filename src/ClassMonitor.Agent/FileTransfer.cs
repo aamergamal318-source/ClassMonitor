@@ -1,57 +1,55 @@
 using ClassMonitor.Shared;
-
+using ClassMonitor.Shared.Settings;
 namespace ClassMonitor.Agent;
 
-/// <summary>Receives files pushed by the teacher and reads files the teacher asks to collect.</summary>
 internal static class FileTransfer
 {
-    /// <summary>Folder on the student machine where pushed files are saved.</summary>
-    public static string InboxFolder =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "ClassMonitor");
-
-    /// <summary>Save a pushed file to the inbox; returns the saved file name.</summary>
-    public static string SaveReceived(FilePush push)
+    public static string InboxFolder => new FileSettings().ReceiveDirectory;
+    public static string SaveReceived(FilePush push) => SaveReceived(push, new FileSettings());
+    public static string SaveReceived(FilePush push, FileSettings settings)
     {
-        Directory.CreateDirectory(InboxFolder);
-        string safeName = Path.GetFileName(push.FileName);
-        if (string.IsNullOrWhiteSpace(safeName)) safeName = "received.bin";
-
-        string dest = Path.Combine(InboxFolder, safeName);
-        dest = MakeUnique(dest);
-        File.WriteAllBytes(dest, Convert.FromBase64String(push.DataBase64));
-        return Path.GetFileName(dest);
+        Validate(settings);
+        ArgumentNullException.ThrowIfNull(push);
+        if (push.DataBase64 is null) throw new InvalidDataException("Missing lesson data.");
+        long maximum = Math.Min(settings.MaximumTransferBytes, MaximumRawFrameBytes);
+        long maximumEncoded = 4 * ((maximum + 2) / 3);
+        if (push.DataBase64.Length > maximumEncoded || push.DataBase64.Length % 4 != 0 || push.DataBase64.Any(char.IsWhiteSpace))
+            throw new InvalidDataException("Lesson data exceeds the permitted size or encoding.");
+        string destination = ApprovedFilePaths.ResolveFileName(settings.ReceiveDirectory, push.FileName);
+        byte[] bytes;
+        try { bytes = Convert.FromBase64String(push.DataBase64); }
+        catch (FormatException error) { throw new InvalidDataException("Invalid lesson encoding.", error); }
+        ApprovedFilePaths.CheckLength(bytes.LongLength, settings);
+        if (bytes.LongLength > maximum) throw new InvalidDataException("Lesson data exceeds the protocol limit.");
+        Directory.CreateDirectory(settings.ReceiveDirectory);
+        string stem = Path.GetFileNameWithoutExtension(destination), extension = Path.GetExtension(destination);
+        for (int suffix = 0; suffix < 10000; suffix++)
+        {
+            string name = suffix == 0 ? push.FileName : $"{stem} ({suffix}){extension}";
+            string candidate = ApprovedFilePaths.ResolveFileName(settings.ReceiveDirectory, name);
+            try { using var output = new FileStream(candidate, FileMode.CreateNew, FileAccess.Write, FileShare.None); output.Write(bytes); return name; }
+            catch (IOException) when (File.Exists(candidate)) { }
+        }
+        throw new IOException("Too many files share this lesson name.");
     }
-
-    /// <summary>Read a file to return to the teacher. Never throws — errors come back in the result.</summary>
-    public static FileDataMsg ReadForCollect(string path)
+    public static FileDataMsg ReadForCollect(string path) => ReadForCollect(path, new FileSettings());
+    public static FileDataMsg ReadForCollect(string path, FileSettings settings)
     {
         try
         {
-            if (!File.Exists(path))
-                return new FileDataMsg(Path.GetFileName(path), "", false, "File not found");
-
-            var bytes = File.ReadAllBytes(path);
-            if (bytes.Length + 1024 > Net.MaxMessageBytes)
-                return new FileDataMsg(Path.GetFileName(path), "", false, "File too large (max ~16 MB)");
-
-            return new FileDataMsg(Path.GetFileName(path), Convert.ToBase64String(bytes), true, "");
+            Validate(settings);
+            string file = ApprovedFilePaths.ResolveRelative(settings.CollectDirectory, path);
+            using var input = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read);
+            ApprovedFilePaths.CheckLength(input.Length, settings);
+            if (input.Length > MaximumRawFrameBytes) throw new InvalidDataException("Lesson file exceeds the protocol limit.");
+            byte[] bytes = new byte[checked((int)input.Length)];
+            input.ReadExactly(bytes);
+            if (input.ReadByte() != -1) throw new IOException("Lesson file changed during collection.");
+            return new FileDataMsg(Path.GetFileName(file), Convert.ToBase64String(bytes), true, "");
         }
-        catch (Exception ex)
-        {
-            return new FileDataMsg(Path.GetFileName(path), "", false, ex.Message);
-        }
+        catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException)
+        { return new FileDataMsg("", "", false, "Lesson file was unavailable, outside its approved directory, or exceeded its limit."); }
     }
-
-    private static string MakeUnique(string path)
-    {
-        if (!File.Exists(path)) return path;
-        string dir = Path.GetDirectoryName(path)!;
-        string name = Path.GetFileNameWithoutExtension(path);
-        string ext = Path.GetExtension(path);
-        for (int i = 1; ; i++)
-        {
-            string candidate = Path.Combine(dir, $"{name} ({i}){ext}");
-            if (!File.Exists(candidate)) return candidate;
-        }
-    }
+    private static long MaximumRawFrameBytes => (Net.MaxMessageBytes - 16384L) / 4 * 3;
+    private static void Validate(FileSettings settings) { ArgumentNullException.ThrowIfNull(settings); new SchoolSettings { Files = settings }.EnsureValid(); }
 }

@@ -106,15 +106,17 @@ public static class ApprovedFilePaths
 
 public static class RecordingRetention
 {
-    public const string OwnedPattern = "classmonitor-*.avi";
+    public const string OwnedPattern = "classmonitor-*";
+    private static bool Owned(string path) =>
+        (Path.GetExtension(path).Equals(".avi", StringComparison.OrdinalIgnoreCase) || Path.GetExtension(path).Equals(".jpg", StringComparison.OrdinalIgnoreCase))
+        && (File.GetAttributes(path) & FileAttributes.ReparsePoint) == 0;
     public static IReadOnlyList<string> FindExpired(string directory, int retentionDays, DateTimeOffset now)
     {
         if (retentionDays < 1 || retentionDays > 365) throw new ArgumentOutOfRangeException(nameof(retentionDays));
         _ = ApprovedFilePaths.ResolveFileName(directory, "classmonitor-retention-check.tmp");
         if (!Directory.Exists(directory)) return Array.Empty<string>();
         return Directory.EnumerateFiles(directory, OwnedPattern, SearchOption.TopDirectoryOnly)
-            .Where(path => (File.GetAttributes(path) & FileAttributes.ReparsePoint) == 0
-                && File.GetLastWriteTimeUtc(path) < now.UtcDateTime.AddDays(-retentionDays)).ToArray();
+            .Where(path => Owned(path) && File.GetLastWriteTimeUtc(path) < now.UtcDateTime.AddDays(-retentionDays)).ToArray();
     }
     public static int PruneExpired(string directory, int retentionDays, DateTimeOffset now)
     {
@@ -126,7 +128,7 @@ public static class RecordingRetention
     {
         _ = ApprovedFilePaths.ResolveFileName(directory, "classmonitor-retention-check.tmp");
         return !Directory.Exists(directory) ? 0 : Directory.EnumerateFiles(directory, OwnedPattern, SearchOption.TopDirectoryOnly)
-            .Where(path => (File.GetAttributes(path) & FileAttributes.ReparsePoint) == 0).Sum(path => new FileInfo(path).Length);
+            .Where(Owned).Sum(path => new FileInfo(path).Length);
     }
 }
 

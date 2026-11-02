@@ -3,8 +3,8 @@
 ## Test boundaries
 Automated tests use loopback, mock disruptive operations and isolated artifact
 directories. No actual device enrollment/deployment, OS restrictions, registry
-installation, firewall modification or visible screen fixture is authorized by
-these tests. Existing screenshot tests must require explicit `--visual`.
+installation, firewall modification or visible screen fixture is performed by
+these tests. The one real installer run is listed below and was limited to this account. Existing screenshot tests must require explicit `--visual`.
 
 ## Executed by QA/release worktree on 2026-11-01
 
@@ -23,6 +23,21 @@ These results precede root integration/runtime migration; rerun after merging.
 The baseline bootstrapper artifact is 233,446,870 bytes and remains local under
 ignored `installer/artifacts`. Rebuild against the integrated product payload;
 do not distribute that baseline artifact as the new school-managed product.
+
+## Executed on the integrated branch, 2026-11-02
+
+| Command | Observed result | What it establishes |
+|---|---|---|
+| `dotnet run --project tests/IntegrationChecks -c Release` | 40 passed | Real AgentServer and AgentConnection over loopback mutual TLS, with fake capture and system operations: enrollment gating, lesson scope and expiry, replay, capabilities, visible state, every session-end cleanup, revocation, health, malformed traffic, file limits, audit content, multi-account records, a hostile enrolled agent |
+| `... IntegrationChecks -c Release -- --windows-identities` | Passed | Real non-exportable CNG keys in the account store work with Schannel mutual TLS |
+| `dotnet run --project tests/SecurityChecks -c Release` | 43 passed | Enrollment, authorization and audit primitives, real mutual TLS rejection, and failure reporting without crash dialogs |
+| `dotnet run --project tests/ConsoleChecks -c Release` | 26 passed | Settings, localization, adaptive stream, retention helpers |
+| `dotnet run --project tests/UpdateChecks -c Release`, also `--worker` on the published updater and `--verify-package` | 29 passed | Update rules, real replacement and rollback, version bookkeeping, package contents |
+| `dotnet run --project installer/InstallerChecks -c Release` | 17 passed | Install core in temporary folders with a mocked registry, firewall arguments, real uninstall script |
+| `tests/UpdateChecks ... --live-download` | Download and hash passed; v1.0.0 package refused for having no updater | Real GitHub path up to extraction |
+| `dotnet run --project tests/LoadProbe -c Release -- --seconds 10` | Passed; see BENCHMARK_RESULTS | Loopback transport only |
+| Real setup window driven by UI Automation | Teacher install, No, Yes verified | Real Apps entry, shortcuts and uninstall on one computer |
+| Mutation proof in a scratch copy | the unmodified code passed, then all 17 guards removed one at a time were each detected | The integration checks detect removal of each listed guard |
 
 ## Required integrated coverage
 

@@ -14,7 +14,7 @@ This increment uses **local administrator approval of an explicitly displayed te
 4. The teacher retains the matching enrolled device record/pin and uses its own OS-protected certificate as the TLS client identity. The agent requires a trusted client certificate; the teacher pins the agent certificate. Unique pairing material may support the existing HMAC exchange only **after** mTLS; the historical `classmonitor` default never grants access.
 5. The teacher starts a classroom lesson with a fresh random GUID (`Guid.NewGuid().ToString("N")`), school/classroom scope and explicit expiry. The agent checks its authoritative grant. All operations call `LessonAuthorization.Demand` with the required capability. Ending/expiry/disconnect must stop capture/control/recording and restore owned restrictions.
 
-Application menu/CLI integration is coordinated separately; see deployment documentation for the actual current commands. Do not assume constructing these shared objects alone enrolls a real application.
+In the applications: the tray item **Export enrollment request** (or `ClassMonitorAgent.exe --enrollment-request <file>`) performs step 1, the teacher console's **Enroll device** performs steps 2 and 4, and **Import enrollment file** in `ClassMonitorSetup.exe` performs step 3 under the Windows administrator prompt. The student's own program never elevates, because students can change its folder; the administrator runs a trusted copy of setup. **Start lesson** performs step 5 for one classroom.
 
 ## Formats and validation
 
@@ -26,13 +26,17 @@ The payload is integrity protected, **not encrypted**: it includes pairing mater
 
 - `WindowsIdentityStore.GetOrCreate("Agent"/"Teacher")` uses CurrentUser Windows CNG named non-exportable RSA keys and the CurrentUser My certificate store. Keys are protected by the Windows user/profile boundary, not a hardware-attestation guarantee.
 - Enrollment is therefore bound to the intended **interactive Windows user/profile**. Running an enrollment request under a different administrator account produces a different identity. An administrator import must target the previously reviewed student request, and the subsequently running agent must match that fingerprint.
-- A machine-wide service broker, multiple concurrent Windows users/RDP sessions, central school CA/revocation and signed organizational assignments remain separate production gates. Local administrator compromise is outside this local trust boundary.
+- Each Windows account has its own identity and its own policy file, `enrollment-<fingerprint>.json`, so a shared computer enrolls each account once and the teacher keeps a record per account. Only one signed-in account can hold the agent port at a time; a second waits.
+- A machine-wide service broker, concurrent Windows users/RDP sessions, central school CA/revocation and signed organizational assignments remain separate production gates. Local administrator compromise is outside this local trust boundary.
 - The initial shared model has one authoritative trusted teacher grant per enrollment. Replacing it requires an explicit protected administrative import. Application integration must terminate/reload existing sessions when revoking/replacing enrollment; a disk write alone does not revoke an already loaded session.
 - Replay memory spans connections within a running process and is bounded; it is not a persistent school revocation ledger across restarts. Fresh TLS handshakes, unique pairing challenges, short lessons and authenticated senders remain mandatory.
 
 ## Auditing
 
 `AuditWriter` accepts enumerated event/reason/capability metadata only. Actor, device, school and classroom identifiers are hashed before writing, with timestamp and allow/deny outcome. It has no parameter for screen, password, chat, file or arbitrary command content. Files rotate within a configured byte bound and owned log files expire by configured retention. Storage ACLs and off-device tamper-evident collection remain deployment/review gates; the local log is not cryptographically immutable.
+
+## Revocation
+An administrator removes the device's policy file from `%ProgramData%\ClassMonitor.Managed`, or imports a replacement. A running session notices within about two seconds and ends. Local accounts can read policy files, which include pairing material; the teacher's private key remains the barrier, and that material adds nothing against a local user.
 
 ## Executed tests
 

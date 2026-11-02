@@ -1,220 +1,259 @@
 using System.Diagnostics;
+using System.Net;
+using System.Text.RegularExpressions;
 using ClassMonitor.Shared;
+using ClassMonitor.Shared.Management;
 
 namespace ClassMonitor.Agent;
 
-/// <summary>
-/// Enforces teacher restrictions on this machine: kills blocked applications, blocks websites
-/// via the hosts file, and blocks all web traffic via a firewall rule. Hosts/firewall changes
-/// require the agent to run with administrator rights (the logon task uses highest privileges).
-/// Restrictions are cleared when the agent stops, so a machine is never left blocked.
-/// </summary>
-internal sealed class Restrictions : IDisposable
+internal sealed record InteractiveProcess(int Id, string Name, int SessionId, long StartedUtcTicks, bool HasVisibleWindow);
+internal interface IRestrictionSystem
 {
-    private readonly AgentUi _ui;
-    private readonly System.Threading.Timer _appTimer;
-    private volatile string[] _blockedApps = Array.Empty<string>();
-    private volatile string[] _allowedApps = Array.Empty<string>();
+    IReadOnlyList<InteractiveProcess> Processes();
+    bool CloseProcess(InteractiveProcess process);
+    void SetSites(string owner, string[] domains);
+    void SetWebBlocked(string owner, bool blocked);
+    void ClearOwned(string owner);
+}
+
+/// <summary>A bounded session policy owns its own changes; it never clears another session's hosts/firewall entries.</summary>
+internal sealed class Restrictions : ISessionRestrictions
+{
+    private readonly IAgentInteraction _ui;
+    private readonly IRestrictionSystem _system;
+    private readonly System.Threading.Timer? _timer;
+    private readonly object _gate = new();
+    private readonly string _owner = Guid.NewGuid().ToString("N");
+    private string[] _blocked = [], _allowed = [];
     private DateTime _lastNotice = DateTime.MinValue;
+    private bool _disposed;
 
-    public Restrictions(AgentUi ui)
+    public Restrictions(IAgentInteraction ui, IRestrictionSystem? system = null, bool startTimer = true)
     {
-        _ui = ui;
-        _appTimer = new System.Threading.Timer(_ => EnforceApps(), null, 1000, 1000);
+        _ui = ui; _system = system ?? new WindowsRestrictionSystem();
+        if (startTimer) _timer = new System.Threading.Timer(_ => EnforceNow(), null, 1000, 1000);
     }
-
-    public void Apply(RestrictCmd c)
+    public void Apply(RestrictCmd command)
     {
-        switch (c.Kind)
+        ArgumentNullException.ThrowIfNull(command);
+        lock (_gate)
         {
-            case "apps":
-                if (string.Equals(c.Mode, "allowlist", StringComparison.OrdinalIgnoreCase))
-                {
-                    _allowedApps = c.Enabled ? NormalizeApps(c.Items) : Array.Empty<string>();
-                    _blockedApps = Array.Empty<string>();
-                }
-                else
-                {
-                    _blockedApps = c.Enabled ? NormalizeApps(c.Items) : Array.Empty<string>();
-                    _allowedApps = Array.Empty<string>();
-                }
-                break;
-            case "sites":
-                HostsBlocker.Set(c.Enabled ? c.Items : Array.Empty<string>());
-                break;
-            case "internet":
-                FirewallBlocker.SetBlocked(c.Enabled);
-                break;
-        }
-    }
-
-    private static string[] NormalizeApps(string[] items) => items
-        .Select(s => s.Trim())
-        .Where(s => s.Length > 0)
-        .Select(s => s.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? s[..^4] : s)
-        .Distinct(StringComparer.OrdinalIgnoreCase)
-        .ToArray();
-
-    private void EnforceApps()
-    {
-        bool killed = false;
-        var blocked = _blockedApps;
-        foreach (var name in blocked)
-        {
-            foreach (var p in Process.GetProcessesByName(name))
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            switch (command.Kind)
             {
-                try { p.Kill(); killed = true; } catch { }
-                finally { try { p.Dispose(); } catch { } }
+                case "apps":
+                    if (command.Mode is not (null or "" or "blocklist" or "allowlist")) throw new InvalidDataException("Unsupported application policy mode.");
+                    var names = command.Enabled ? NormalizeApps(command.Items) : [];
+                    _allowed = command.Mode == "allowlist" ? names : [];
+                    _blocked = command.Mode == "allowlist" ? [] : names;
+                    break;
+                case "sites":
+                    if (command.Mode is not (null or "" or "blocklist")) throw new NotSupportedException("Domain allow-list enforcement is not supported by the hosts backend.");
+                    _system.SetSites(_owner, command.Enabled ? NormalizeDomains(command.Items) : []);
+                    break;
+                case "internet": _system.SetWebBlocked(_owner, command.Enabled); break;
+                default: throw new InvalidDataException("Unsupported focus policy.");
             }
         }
-
-        var allowed = _allowedApps;
-        if (allowed.Length > 0)
+    }
+    public void Clear()
+    {
+        lock (_gate)
         {
-            var allowedSet = allowed.ToHashSet(StringComparer.OrdinalIgnoreCase);
-            foreach (var p in Process.GetProcesses())
+            _blocked = []; _allowed = [];
+            _system.ClearOwned(_owner);
+        }
+    }
+    public void EnforceNow()
+    {
+        lock (_gate)
+        {
+            if (_disposed || (_blocked.Length == 0 && _allowed.Length == 0)) return;
+            bool closed = false;
+            foreach (var process in _system.Processes())
             {
-                try
-                {
-                    var processName = p.ProcessName;
-                    if (IsProtectedProcess(processName)) continue;
-                    if (allowedSet.Contains(processName)) continue;
-                    p.Kill();
-                    killed = true;
-                }
-                catch { }
-                finally { try { p.Dispose(); } catch { } }
+                if (!process.HasVisibleWindow || process.SessionId != Process.GetCurrentProcess().SessionId || IsProtectedProcess(process.Name)) continue;
+                if (_blocked.Contains(process.Name, StringComparer.OrdinalIgnoreCase) ||
+                    (_allowed.Length > 0 && !_allowed.Contains(process.Name, StringComparer.OrdinalIgnoreCase)))
+                    closed |= _system.CloseProcess(process);
+            }
+            if (closed && DateTime.UtcNow - _lastNotice > TimeSpan.FromSeconds(8))
+            {
+                _lastNotice = DateTime.UtcNow;
+                _ui.ShowMessage("A classroom focus policy closed an unrelated application. Restrictions end with the lesson.", 4000);
             }
         }
-
-        if (killed && (DateTime.Now - _lastNotice).TotalSeconds > 8)
-        {
-            _lastNotice = DateTime.Now;
-            _ui.ShowMessage("An application blocked by the teacher was closed.", 4000);
-        }
     }
-
-    private static bool IsProtectedProcess(string processName)
+    public static string[] NormalizeApps(string[] names)
     {
-        var name = processName.Trim();
-        if (string.IsNullOrEmpty(name)) return true;
-
-        return name.Equals("explorer", StringComparison.OrdinalIgnoreCase)
-            || name.Equals("System", StringComparison.OrdinalIgnoreCase)
-            || name.Equals("Idle", StringComparison.OrdinalIgnoreCase)
-            || name.Equals("wininit", StringComparison.OrdinalIgnoreCase)
-            || name.Equals("csrss", StringComparison.OrdinalIgnoreCase)
-            || name.Equals("lsass", StringComparison.OrdinalIgnoreCase)
-            || name.Equals("services", StringComparison.OrdinalIgnoreCase)
-            || name.Equals("smss", StringComparison.OrdinalIgnoreCase)
-            || name.Equals("dwm", StringComparison.OrdinalIgnoreCase)
-            || name.Equals("fontdrvhost", StringComparison.OrdinalIgnoreCase)
-            || name.Equals("svchost", StringComparison.OrdinalIgnoreCase)
-            || name.Equals("RuntimeBroker", StringComparison.OrdinalIgnoreCase);
+        if (names is null || names.Length > 100) throw new InvalidDataException("Application list is too large.");
+        var result = names.Select(name => (name ?? "").Trim()).Select(name => name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? name[..^4] : name).ToArray();
+        if (result.Any(name => name.Length is < 1 or > 80 || !Regex.IsMatch(name, "^[A-Za-z0-9_.-]+$", RegexOptions.CultureInvariant) || name is "." or ".."))
+            throw new InvalidDataException("Only process names, not executable paths or arguments, are permitted.");
+        if (result.Any(IsProtectedProcess)) throw new InvalidDataException("Essential Windows and ClassMonitor processes cannot be restricted.");
+        return result.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
     }
-
+    public static string[] NormalizeDomains(string[] domains)
+    {
+        if (domains is null || domains.Length > 100) throw new InvalidDataException("Domain list is too large.");
+        var result = domains.Select(domain => (domain ?? "").Trim().ToLowerInvariant()).ToArray();
+        if (result.Any(domain => domain.Length is < 1 or > 253 || domain.EndsWith('.') || domain == "localhost" ||
+            Uri.CheckHostName(domain) != UriHostNameType.Dns || domain.Any(char.IsWhiteSpace) || domain.Contains('_')))
+            throw new InvalidDataException("Website policies require DNS host names without URLs, paths, ports or wildcards.");
+        return result.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+    }
+    public static bool IsProtectedProcess(string name) => string.IsNullOrWhiteSpace(name) || name.StartsWith("ClassMonitor", StringComparison.OrdinalIgnoreCase) ||
+        new[] { "explorer", "System", "Idle", "wininit", "csrss", "lsass", "services", "smss", "dwm", "fontdrvhost", "svchost", "RuntimeBroker", "taskmgr", "consent", "StartMenuExperienceHost", "ShellExperienceHost", "SearchHost", "SecurityHealthSystray" }.Contains(name, StringComparer.OrdinalIgnoreCase);
     public void Dispose()
     {
-        _appTimer.Dispose();
-        _blockedApps = Array.Empty<string>();
-        _allowedApps = Array.Empty<string>();
-        // Don't strand the machine: lift hosts/firewall restrictions when the agent stops.
-        try { HostsBlocker.Set(Array.Empty<string>()); } catch { }
-        try { FirewallBlocker.SetBlocked(false); } catch { }
+        _timer?.Dispose();
+        lock (_gate) { if (_disposed) return; Clear(); _disposed = true; }
     }
 }
 
-/// <summary>Blocks domains by routing them to 0.0.0.0 in the Windows hosts file.</summary>
+internal sealed class WindowsRestrictionSystem : IRestrictionSystem
+{
+    private readonly HashSet<string> _siteOwners = [];
+    private readonly Dictionary<string, HashSet<string>> _rules = [];
+    private readonly object _gate = new();
+    public IReadOnlyList<InteractiveProcess> Processes()
+    {
+        var found = new List<InteractiveProcess>();
+        int session = Process.GetCurrentProcess().SessionId;
+        foreach (var process in Process.GetProcesses())
+            using (process)
+                try
+                {
+                    if (process.SessionId == session && process.MainWindowHandle != IntPtr.Zero)
+                        found.Add(new InteractiveProcess(process.Id, process.ProcessName, session, process.StartTime.ToUniversalTime().Ticks, true));
+                }
+                catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception) { }
+        return found;
+    }
+    public bool CloseProcess(InteractiveProcess expected)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(expected.Id);
+            if (process.Id == Environment.ProcessId || process.SessionId != Process.GetCurrentProcess().SessionId || process.MainWindowHandle == IntPtr.Zero ||
+                process.StartTime.ToUniversalTime().Ticks != expected.StartedUtcTicks || !process.ProcessName.Equals(expected.Name, StringComparison.OrdinalIgnoreCase) || Restrictions.IsProtectedProcess(process.ProcessName)) return false;
+            process.Kill(); return true;
+        }
+        catch (Exception error) when (error is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception) { return false; }
+    }
+    public void SetSites(string owner, string[] domains)
+    {
+        lock (_gate)
+        {
+            if (domains.Length == 0 && !_siteOwners.Contains(owner)) return;
+            HostsBlocker.Set(owner, domains);
+            if (domains.Length == 0) _siteOwners.Remove(owner); else _siteOwners.Add(owner);
+        }
+    }
+    public void SetWebBlocked(string owner, bool blocked)
+    {
+        lock (_gate)
+        {
+            if (!blocked) { ClearWeb(owner); return; }
+            if (_rules.ContainsKey(owner)) return;
+            var owned = new HashSet<string>(); _rules.Add(owner, owned);
+            try
+            {
+                foreach (string protocol in new[] { "TCP", "UDP" })
+                {
+                    // A fixed name lets the next start remove a rule left behind by a crash or restart.
+                    string name = "ClassMonitor-Session-" + protocol;
+                    RunNetsh("advfirewall", "firewall", "add", "rule", "name=" + name, "dir=out", "action=block", "protocol=" + protocol, "remoteport=" + (protocol == "TCP" ? "80,443" : "443"));
+                    owned.Add(name);
+                }
+            }
+            catch { ClearWeb(owner); throw; }
+        }
+    }
+    public void ClearOwned(string owner)
+    {
+        lock (_gate)
+        {
+            var errors = new List<Exception>();
+            if (_siteOwners.Contains(owner)) try { SetSites(owner, []); } catch (Exception error) { errors.Add(error); }
+            try { ClearWeb(owner); } catch (Exception error) { errors.Add(error); }
+            if (errors.Count > 0) throw new AggregateException("Some owned classroom restrictions could not be restored.", errors);
+        }
+    }
+    private void ClearWeb(string owner)
+    {
+        if (!_rules.TryGetValue(owner, out var owned)) return;
+        foreach (string name in owned.ToArray())
+        {
+            RunNetsh("advfirewall", "firewall", "delete", "rule", "name=" + name);
+            owned.Remove(name);
+        }
+        _rules.Remove(owner);
+    }
+    private static void RunNetsh(params string[] arguments)
+    {
+        var start = new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "netsh.exe"))
+        { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+        foreach (string argument in arguments) start.ArgumentList.Add(argument);
+        using var process = Process.Start(start) ?? throw new IOException("Cannot start Windows Firewall management.");
+        var stdout = process.StandardOutput.ReadToEndAsync(); var stderr = process.StandardError.ReadToEndAsync();
+        if (!process.WaitForExit(5000)) { process.Kill(); throw new IOException("Windows Firewall operation timed out."); }
+        Task.WhenAll(stdout, stderr).GetAwaiter().GetResult();
+        if (process.ExitCode != 0) throw new IOException("Windows Firewall could not apply or restore the session rule. Administrator permission is required.");
+    }
+}
+
 internal static class HostsBlocker
 {
-    private const string Begin = "# ClassMonitor-Begin";
-    private const string End = "# ClassMonitor-End";
-
-    private static string HostsPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.System), "drivers", "etc", "hosts");
-
-    public static void Set(string[] domains)
+    private static readonly object Gate = new();
+    public static string[] UpdateOwnedLines(IEnumerable<string> original, string owner, IReadOnlyList<string> domains)
     {
-        try
+        if (!Regex.IsMatch(owner, "^[a-f0-9]{32}$", RegexOptions.CultureInvariant)) throw new InvalidDataException("Invalid policy ownership identifier.");
+        string begin = "# ClassMonitor:" + owner + ":Begin", end = "# ClassMonitor:" + owner + ":End";
+        bool inside = false; var result = new List<string>();
+        foreach (string line in original)
         {
-            var lines = File.Exists(HostsPath) ? File.ReadAllLines(HostsPath).ToList() : new List<string>();
-            lines = StripBlock(lines);
-
-            var clean = domains
-                .Select(d => d.Trim().ToLowerInvariant()
-                    .Replace("https://", "").Replace("http://", "").TrimEnd('/'))
-                .Where(d => d.Length > 0)
-                .Distinct()
-                .ToList();
-
-            if (clean.Count > 0)
+            if (line.Trim() == begin) { if (inside) throw new InvalidDataException("Malformed owned hosts block."); inside = true; continue; }
+            if (line.Trim() == end) { if (!inside) throw new InvalidDataException("Malformed owned hosts block."); inside = false; continue; }
+            if (!inside) result.Add(line);
+        }
+        if (inside) throw new InvalidDataException("Malformed owned hosts block.");
+        if (domains.Count > 0)
+        {
+            result.Add(begin);
+            foreach (string domain in domains) { result.Add("0.0.0.0 " + domain); if (!domain.StartsWith("www.", StringComparison.Ordinal)) result.Add("0.0.0.0 www." + domain); }
+            result.Add(end);
+        }
+        return result.ToArray();
+    }
+    public static void Set(string owner, string[] domains)
+    {
+        lock (Gate)
+        {
+            string hosts = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "drivers", "etc", "hosts");
+            if ((File.GetAttributes(hosts) & FileAttributes.ReparsePoint) != 0) throw new IOException("A linked hosts file cannot be changed.");
+            string temporary = hosts + ".classmonitor-" + Guid.NewGuid().ToString("N"), backup = temporary + ".backup";
+            try
             {
-                lines.Add(Begin);
-                foreach (var d in clean)
+                using (var exclusive = new FileStream(hosts, FileMode.Open, FileAccess.ReadWrite, FileShare.Read | FileShare.Delete))
                 {
-                    lines.Add($"0.0.0.0 {d}");
-                    if (!d.StartsWith("www.")) lines.Add($"0.0.0.0 www.{d}");
+                    using var reader = new StreamReader(exclusive, leaveOpen: true);
+                    string[] lines = reader.ReadToEnd().Replace("\r\n", "\n").Split('\n');
+                    File.WriteAllLines(temporary, UpdateOwnedLines(lines, owner, domains));
+                    File.Replace(temporary, hosts, backup, ignoreMetadataErrors: false);
                 }
-                lines.Add(End);
             }
-
-            File.WriteAllLines(HostsPath, lines);
-            FlushDns();
-        }
-        catch { /* needs admin; ignore if not elevated */ }
-    }
-
-    private static List<string> StripBlock(List<string> lines)
-    {
-        var result = new List<string>(lines.Count);
-        bool inBlock = false;
-        foreach (var line in lines)
-        {
-            if (line.Trim() == Begin) { inBlock = true; continue; }
-            if (line.Trim() == End) { inBlock = false; continue; }
-            if (!inBlock) result.Add(line);
-        }
-        return result;
-    }
-
-    private static void FlushDns()
-    {
-        try
-        {
-            using var p = Process.Start(new ProcessStartInfo("ipconfig", "/flushdns")
-            { CreateNoWindow = true, UseShellExecute = false });
-            p?.WaitForExit(3000);
-        }
-        catch { }
-    }
-}
-
-/// <summary>Blocks all outbound web traffic (TCP 80/443) with a Windows Firewall rule.</summary>
-internal static class FirewallBlocker
-{
-    private const string Rule = "ClassMonitor-BlockWeb";
-
-    public static void SetBlocked(bool on)
-    {
-        // Remove any existing rule first (idempotent), then add if blocking.
-        Run($"advfirewall firewall delete rule name=\"{Rule}\"");
-        if (on)
-            Run($"advfirewall firewall add rule name=\"{Rule}\" dir=out action=block protocol=TCP remoteport=80,443");
-    }
-
-    private static void Run(string args)
-    {
-        try
-        {
-            using var p = Process.Start(new ProcessStartInfo("netsh", args)
+            finally
             {
-                CreateNoWindow = true,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            })!;
-            p.WaitForExit(4000);
+                foreach (string file in new[] { temporary, backup }) try { if (File.Exists(file)) File.Delete(file); } catch (IOException) { }
+            }
         }
-        catch { /* needs admin; ignore if not elevated */ }
+        // DNS cache refresh is best-effort after a successful owned-file transaction.
+        try
+        {
+            using var process = Process.Start(new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "ipconfig.exe"), "/flushdns") { UseShellExecute = false, CreateNoWindow = true });
+            if (process is not null && !process.WaitForExit(3000)) process.Kill();
+        }
+        catch (Exception error) when (error is IOException or System.ComponentModel.Win32Exception) { }
     }
 }

@@ -2,23 +2,30 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using ClassMonitor.Shared;
+using ClassMonitor.Shared.Settings;
 
 namespace ClassMonitor.Teacher;
 
 /// <summary>Listens for agent UDP beacons and raises an event the first time each host is seen.</summary>
 internal sealed class Discovery : IDisposable
 {
-    private readonly CancellationTokenSource _cts = new();
+    private CancellationTokenSource? _cts;
     private UdpClient? _udp;
 
     /// <summary>Raised on a background thread with (host, machineName, userName, port).</summary>
-    public event Action<string, string, string, int>? AgentSeen;
+    public event Action<string, string, string, int, string>? AgentSeen;
 
-    public void Start()
+    public void Start(NetworkSettings? settings = null)
     {
+        Stop();
+        settings ??= new NetworkSettings();
+        new SchoolSettings { Network = settings }.EnsureValid();
+        if (!settings.DiscoveryEnabled) return;
+        _cts = new CancellationTokenSource();
         _udp = new UdpClient();
         _udp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-        _udp.Client.Bind(new IPEndPoint(IPAddress.Any, Net.DiscoveryPort));
+        var address = string.IsNullOrWhiteSpace(settings.LocalInterfaceAddress) ? IPAddress.Any : IPAddress.Parse(settings.LocalInterfaceAddress);
+        _udp.Client.Bind(new IPEndPoint(address, settings.DiscoveryPort));
         _ = Task.Run(() => ListenAsync(_cts.Token));
     }
 
@@ -31,11 +38,11 @@ internal sealed class Discovery : IDisposable
                 var result = await _udp!.ReceiveAsync(ct);
                 var text = Encoding.UTF8.GetString(result.Buffer);
                 var parts = text.Split('|');
-                if (parts.Length >= 3 && parts[0] == Net.DiscoveryMagic)
+                if (parts.Length >= 5 && parts[0] == Net.DiscoveryMagic && parts[1].Length <= 128 && parts[4].Length <= 128)
                 {
                     string host = result.RemoteEndPoint.Address.ToString();
                     int port = parts.Length >= 4 && int.TryParse(parts[3], out var p) ? p : Net.AgentTcpPort;
-                    AgentSeen?.Invoke(host, parts[1], parts[2], port);
+                    if (port is >= 1024 and <= 65535) AgentSeen?.Invoke(host, parts[1], parts[2], port, parts[4]);
                 }
             }
             catch (OperationCanceledException) { break; }
@@ -44,9 +51,14 @@ internal sealed class Discovery : IDisposable
     }
 
     public void Dispose()
+        => Stop();
+
+    public void Stop()
     {
-        _cts.Cancel();
+        _cts?.Cancel();
         _udp?.Dispose();
-        _cts.Dispose();
+        _cts?.Dispose();
+        _cts = null;
+        _udp = null;
     }
 }

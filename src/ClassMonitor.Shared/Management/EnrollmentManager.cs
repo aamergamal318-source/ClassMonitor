@@ -96,6 +96,14 @@ public static class EnrollmentManager
 
     public static void ValidateEnrollment(DeviceEnrollment enrollment)
     {
+        ValidateEnrollmentStructure(enrollment);
+        if (enrollment.ExpiresAtUtc <= DateTimeOffset.UtcNow || enrollment.Teacher.ExpiresAtUtc <= DateTimeOffset.UtcNow)
+            throw new AuthenticationException("enrollment.expired");
+    }
+
+    /// <summary>A saved record stays readable after it expires, so the console can start and ask for re-enrollment.</summary>
+    public static void ValidateEnrollmentStructure(DeviceEnrollment enrollment)
+    {
         if (enrollment is null || enrollment.Teacher is null) throw new AuthenticationException("enrollment.required");
         ValidateIdentifier(enrollment.SchoolId); ValidateIdentifier(enrollment.ClassroomId);
         ValidateGrant(enrollment.Teacher);
@@ -104,8 +112,6 @@ public static class EnrollmentManager
         if (enrollment.Teacher.SchoolId != enrollment.SchoolId || !enrollment.Teacher.ClassroomIds.Contains(enrollment.ClassroomId, StringComparer.Ordinal))
             throw new AuthenticationException("enrollment.scope.mismatch");
         if (enrollment.ExpiresAtUtc > enrollment.Teacher.ExpiresAtUtc) throw new InvalidDataException("enrollment.expiration.invalid");
-        if (enrollment.ExpiresAtUtc <= DateTimeOffset.UtcNow || enrollment.Teacher.ExpiresAtUtc <= DateTimeOffset.UtcNow)
-            throw new AuthenticationException("enrollment.expired");
     }
 
     public static bool IsStrongPairingSecret(string? value)

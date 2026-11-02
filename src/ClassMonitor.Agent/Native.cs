@@ -38,4 +38,13 @@ internal static partial class Native
 
     // keybd_event flags
     public const uint KEYEVENTF_KEYUP = 0x0002;
+
+    public static readonly IntPtr HwndTopmost = new(-1);
+    public const uint SwpNoSize = 0x0001, SwpNoMove = 0x0002, SwpNoActivate = 0x0010;
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    public static extern bool SetWindowPos(IntPtr window, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    public static extern bool DestroyIcon(IntPtr icon);
 }

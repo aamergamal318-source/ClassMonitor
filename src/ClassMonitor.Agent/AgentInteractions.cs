@@ -10,7 +10,7 @@ internal interface IAgentInteraction
     void ShowBroadcastFrame(byte[] jpeg);
     void HideBroadcast();
     void ShowChat(string from, string text, Func<string, Task> reply);
-    void SetManagedState(bool active, string teacher, string classroom, bool assisting, bool recording);
+    void SetManagedState(bool active, string teacher, string classroom, bool assisting, bool recording, bool shared);
 }
 
 internal interface ISessionRestrictions : IDisposable
@@ -19,8 +19,8 @@ internal interface ISessionRestrictions : IDisposable
     void Clear();
 }
 
-internal sealed record AgentOperations(Action<RemoteInputCmd, int> Input, Action<PowerCmd> Power, Action<RunCmd> Run)
+internal sealed record AgentOperations(Action<RemoteInputCmd, int> Input, Action<PowerCmd> Power, Action<RunCmd> Run, Action? Release = null)
 {
-    public static AgentOperations Default => new((command, _) => RemoteInput.Apply(command),
-        command => PowerControl.Apply(command.Action), RunControl.Apply);
+    public static AgentOperations Default => new(RemoteInput.Apply,
+        command => PowerControl.Apply(command.Action), RunControl.Apply, RemoteInput.ReleaseAll);
 }

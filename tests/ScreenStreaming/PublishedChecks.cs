@@ -11,11 +11,11 @@ internal static class PublishedChecks
 {
     public static async Task RunAsync()
     {
-        // Read existing settings without modifying them or printing the class password.
-        var config = File.Exists(AppConfig.AgentConfigPath)
-            ? JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(AppConfig.AgentConfigPath))!
-            : new AppConfig();
-        using (var probe = new TcpListener(IPAddress.Loopback, config.Port)) probe.Start();
+        // Needs an enrolled loopback device: this account's agent enrollment and its record in teacher.json.
+        var config = File.Exists(AppConfig.TeacherConfigPath) ? AppConfig.Load(AppConfig.TeacherConfigPath) : new AppConfig();
+        var pairing = config.PairedDevices.FirstOrDefault(p => p.Host is "127.0.0.1" or "localhost")
+            ?? throw new Exception("--published requires an enrolled loopback device in teacher.json. No device was changed.");
+        using var teacher = ClassMonitor.Shared.Management.WindowsIdentityStore.GetOrCreate("Teacher");
         using var process = Process.Start(new ProcessStartInfo(
             Path.GetFullPath("release/ClassMonitor/agent/ClassMonitorAgent.exe"))
         {
@@ -27,10 +27,9 @@ internal static class PublishedChecks
             if (process.HasExited) throw new Exception($"Published agent exited: {process.ExitCode}");
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(40));
             await CheckMainFormAsync();
-            await Task.WhenAll(Enumerable.Range(0, 3).Select(async index =>
+            foreach (int index in Enumerable.Range(0, 3))
             {
-                using var conn = new AgentConnection("127.0.0.1", "Published test", config.Port,
-                    Security.DeriveKey(config.Password));
+                using var conn = new AgentConnection("127.0.0.1", "Published test", pairing, teacher, config.Settings);
                 var frames = Channel.CreateUnbounded<byte[]>();
                 conn.FrameReceived += (_, jpeg) => frames.Writer.TryWrite(jpeg);
                 using var tile = new AgentTile(conn, new Size(400, 260));
@@ -38,6 +37,7 @@ internal static class PublishedChecks
                 live.Show();
                 Program.ShowFixture();
                 await conn.ConnectAsync().WaitAsync(timeout.Token);
+                if (!await conn.StartLessonAsync(DateTimeOffset.UtcNow.AddMinutes(5))) throw new Exception("Lesson refused");
                 await conn.RequestScreenAsync(1280, 75, 200);
                 for (int i = 0; i < 10; i++)
                 {
@@ -45,28 +45,22 @@ internal static class PublishedChecks
                     await TransportChecks.CheckViewsAsync(tile, live, true, timeout.Token);
                 }
                 live.Close();
-                Console.WriteLine($"Published agent, client {index + 1}: PASS (10 desktop frames in both views)");
-            }));
-            Console.WriteLine("PASS: published self-contained agent; 3 TLS clients; 30 real desktop frames rendered in both views.");
+                Console.WriteLine($"Published agent, lesson {index + 1}: PASS (10 desktop frames in both views)");
+                await conn.EndLessonAsync();
+                await Task.Delay(500, timeout.Token);
+            }
+            Console.WriteLine("PASS: published self-contained agent; 3 enrolled lessons; 30 real desktop frames rendered in both views.");
 
             async Task CheckMainFormAsync()
             {
-                using var main = new MainForm();
-                typeof(MainForm).GetField("_key", BindingFlags.NonPublic | BindingFlags.Instance)!
-                    .SetValue(main, Security.DeriveKey(config.Password));
+                using var main = new MainForm(config);
                 main.Show();
-                typeof(MainForm).GetMethod("AddOrConnect", BindingFlags.NonPublic | BindingFlags.Instance)!
-                    .Invoke(main, new object[] { "127.0.0.1", "Published agent UI test", config.Port });
                 var tiles = (Dictionary<string, AgentTile>)typeof(MainForm)
                     .GetField("_tiles", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(main)!;
-                for (int i = 0; i < 10; i++)
-                {
-                    await Task.Delay(1100, timeout.Token);
-                    if (!tiles.TryGetValue("127.0.0.1", out var tile)) throw new Exception("MainForm dropped the agent connection");
-                    TransportChecks.CheckPicture(tile.Controls.OfType<PictureBox>().Single(), true);
-                }
+                await Task.Delay(3000, timeout.Token);
+                if (!tiles.ContainsKey(pairing.Host)) throw new Exception("MainForm did not list the enrolled device");
                 main.Close();
-                Console.WriteLine("Main teacher console: PASS (10 real desktop frames rendered through production event handlers)");
+                Console.WriteLine("Main teacher console: PASS (enrolled device listed)");
             }
         }
         finally

@@ -38,6 +38,24 @@ New `src/ClassMonitor.Shared/Management/` models, offline enrollment signatures,
 - Hardware/GPU/multi-monitor/capture regression tests on the reported affected student devices; these security tests do not claim to fix the black screen.
 - Signing, installation/uninstallation, device-fleet and physical 30-device testing. Nothing was deployed or published.
 
+## Independent review of the integrated branch, 2026-11-02
+
+A Claude sub-agent that did not write this code read the integrated working tree. It ran nothing. It is the same vendor's model and is not a substitute for a human or cross-vendor assessment. It found no route to capture, input, commands or files around enrollment, mutual TLS and an active lesson with the required capability. It raised 35 findings.
+
+Fixed and tested where a test is listed in TEST_PLAN:
+- **High:** elevated code from the student-writable folder (import moved to a trusted copy of setup; the elevated scheduled task removed); one expired enrollment stopping the console; web blocks surviving a crash or restart (fixed rule names, sweep at elevated start, setup tool, notice at uninstall, cleared before power commands).
+- **Medium:** a student ending a session being undone by automatic reconnect; ordinary command failures ending lessons; the console trusting unsolicited files, frames and names from a modified agent; one record per host blocking shared computers; policy in a machine-wide user-writable file (recording consent now comes from the signed grant, settings moved to the profile); weak visible state (distinct icon, an uncloseable banner per monitor, kept above lock and presentation windows); no notice when a student's screen is shown to the class; snapshots outside retention; retention and quota checked only when recording starts; lessons not scoped to a classroom; audit flooding and false reasons; release script gaps; documentation describing the removed password.
+- **Low:** corrupt policy stopping the listener; junction race and generic-rights ACL gaps on import; self-compared pin; hung capture blocking cleanup; health interval mismatch; stale focus expiry; bare executable names; firewall scope and duplicates; leftover backups; misleading setup and uninstall messages; update bookkeeping able to reach rollback; power skipped without a result; stale chat reply path; unbounded broadcast queue; dead password and certificate code.
+
+Remaining, accepted for now and tracked:
+- The audit log is in the student's profile, can be altered by the student, and a failed write does not stop a lesson. Tamper-evident collection remains a gate.
+- Pairing material is readable by local accounts. The teacher's private key remains the real barrier.
+- A modified agent can still send oversized or frequent frames to the teacher within protocol limits, and can lie about its machine name, which is shown as a label only.
+- Spoofed beacons can use up the console's 500 unauthenticated entries, and pins still stop any connection to a rogue host.
+- Setup's firewall rule uses the default ports even if settings change them. Some teacher messages report a command as sent before the agent confirms it; refusals are still reported.
+- The uninstall script uses `-ExecutionPolicy Bypass` until scripts can be signed. Binaries are unsigned, so an administrator must obtain setup from a trusted source.
+- The reviewer did not read UpdateController, ReleaseUpdater, SettingsCenterForm or AviMjpegWriter, and could not assess an update applied during a lesson.
+
 ## Test result
 
 Command: `dotnet run --project tests/SecurityChecks -c Release` in the isolated security worktree, .NET SDK 9.0.203 baseline. **40 PASS**, exit 0. Build emitted zero compiler warnings/errors. Initial sandbox key access failed before tests; rerun with scoped escalation allowed temporary Schannel key access and all checks passed. No trust-store enrollment or visible fixtures were opened. Tests and generated logs stay in ignored `tests/SecurityChecks/artifacts/`.

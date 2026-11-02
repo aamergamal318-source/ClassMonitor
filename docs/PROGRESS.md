@@ -24,4 +24,24 @@
 - Evidence with SDK 10.0.403: SecurityChecks **43 PASS** (40 existing plus 3 harness regression checks), exit 0, plus 10 consecutive clean runs; ConsoleChecks 26 PASS; UpdateChecks 26 PASS; LoadProbe `--seconds 5` exit 0. An unguarded crash started 0 `WerFault` processes after the fix versus 1 before. Removing the active-lesson guard in a scratch copy produced 4 named failures and exit 1.
 - Limitations: ScreenStreaming was not executed (`--visual` was not requested; it exits 2 without opening a window). ConsoleChecks, UpdateChecks, LoadProbe and ScreenStreaming still run code before their `try` and do not disable WER UI, and test projects are outside `ClassMonitor.sln`, so a solution build does not rebuild them.
 
+## Integration, 2026-11-02
+Branch `work/integration` combines the unfinished coordinator, console and endpoint work (copied, not moved, from their worktrees) with a new teacher connection, enrollment workflow, lesson control, visible student state, single-file setup and independent-review fixes. Version 1.2.0 is prepared, not published.
+
+Executed with SDK 10.0.403 on one Windows 11 development computer:
+- SecurityChecks 43, IntegrationChecks 40, ConsoleChecks 26, UpdateChecks 29 (also against the published updater), InstallerChecks 17: all pass. `Publish-Release.ps1` without `-Publish` runs these and builds the installer.
+- IntegrationChecks `--windows-identities`: real non-exportable Windows keys complete mutual TLS and a lesson; created identities are removed afterwards.
+- Mutation proof on a scratch copy: the unmodified code passed, then all 17 guards removed one at a time were each detected.
+- Real installer on this computer: Teacher console installed through the actual setup window, with Start menu and desktop shortcuts, Apps entry and version 1.2.0, using 85.4 MB. Uninstall through the Apps command waited for the prompt: No kept everything, Yes removed files, Apps entry and shortcuts. The student role also appears correctly installed on this computer, but that install did not come from a scripted test step, so it was left in place and its uninstall was not tested.
+- Real GitHub update path against public v1.0.0: metadata, download and SHA-256 passed, then the package was correctly refused because v1.0.0 has no updater. Installations of v1.0.0 therefore need setup once.
+- LoadProbe 10/20/30 simulated peers on loopback: see BENCHMARK_RESULTS.
+
+Independent review: a Claude sub-agent that did not write this code read it without running anything. It found no route to capture or commands around enrollment, mutual TLS and a lesson, and raised 35 findings. See SECURITY_REVIEW for what changed and what remains. It is the same vendor's model, so it is not a cross-vendor review.
+
+Not executed, and therefore still release gates:
+- Administrator enrollment import with a real elevation prompt and real ACLs. This session has no elevated rights, so no agent has run end to end with a stored enrollment.
+- Real firewall rule, website and internet blocks, and the leftover-restriction cleanup with administrator rights. Only the parsing and arguments are tested.
+- A real update from one installed version to a newer stable release, which needs a published stable release.
+- Real screen capture through the new session on affected student computers, the ScreenStreaming visual fixtures (they require `--visual`), multi-monitor, RDP, fast user switching, and physical 30-device use. The black-screen report remains unconfirmed.
+- Human review of Arabic and Hebrew, accessibility on real hardware, and code signing.
+
 Only replace these statuses with executed evidence. Record exact test commands/results and remaining release gates after integration.

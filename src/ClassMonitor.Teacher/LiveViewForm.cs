@@ -14,7 +14,8 @@ internal sealed class LiveViewForm : Form
     private readonly ToolStripButton _controlBtn;
     private readonly ToolStripComboBox _monitorCombo;
     private Size _frameSize = new(1, 1);
-    private bool _control;
+    private readonly ClassMonitor.Teacher.Presentation.LatestFrameDispatcher _frames;
+    private bool _control, _applyingControl;
     private int _monitorIndex = -1;
 
     public LiveViewForm(AgentConnection conn)
@@ -27,10 +28,13 @@ internal sealed class LiveViewForm : Form
 
         var tools = new ToolStrip();
         _controlBtn = new ToolStripButton("Take control") { CheckOnClick = true };
-        _controlBtn.CheckedChanged += (_, _) =>
+        _controlBtn.CheckedChanged += async (_, _) =>
         {
-            _control = _controlBtn.Checked;
-            _controlBtn.Text = _control ? "Release control" : "Take control";
+            if (_applyingControl) return;
+            bool requested = _controlBtn.Checked;
+            // Input flows only after the agent has confirmed it is showing the assistance state.
+            bool ok = await _conn.SetAssistanceAsync(requested);
+            SetControlState(requested && ok);
         };
         tools.Items.Add(_controlBtn);
         tools.Items.Add(new ToolStripSeparator());
@@ -54,10 +58,23 @@ internal sealed class LiveViewForm : Form
         KeyDown += (_, e) => { if (_control) { _ = _conn.RemoteInputAsync(new RemoteInputCmd("keydown", VKey: e.KeyValue)); e.SuppressKeyPress = true; } };
         KeyUp += (_, e) => { if (_control) { _ = _conn.RemoteInputAsync(new RemoteInputCmd("keyup", VKey: e.KeyValue)); e.SuppressKeyPress = true; } };
 
+        _frames = new ClassMonitor.Teacher.Presentation.LatestFrameDispatcher(this, ShowFrame);
         _conn.FrameReceived += OnFrame;
         _conn.MonitorsReceived += OnMonitors;
         Load += async (_, _) => { PopulateMonitors(); await RequestAsync(); };
     }
+
+    private void SetControlState(bool active)
+    {
+        _control = active;
+        _applyingControl = true;
+        _controlBtn.Checked = active;
+        _applyingControl = false;
+        _controlBtn.Text = active ? "Release control" : "Take control";
+    }
+
+    /// <summary>Stops local input when the lesson or permission ended; the agent has already refused it.</summary>
+    public void ReleaseAssistance() => SetControlState(false);
 
     private void OnMonitors(AgentConnection c)
     {
@@ -121,19 +138,20 @@ internal sealed class LiveViewForm : Form
     private void OnFrame(AgentConnection c, byte[] jpeg)
     {
         if (c != _conn || IsDisposed) return;
-        if (!IsHandleCreated) return;
-        BeginInvoke(() =>
+        _frames.Submit(jpeg);
+    }
+
+    private void ShowFrame(byte[] jpeg)
+    {
+        try
         {
-            try
-            {
-                using var ms = new MemoryStream(jpeg);
-                using var tmp = Image.FromStream(ms);
-                _frameSize = tmp.Size;
-                _pic.Image?.Dispose();
-                _pic.Image = new Bitmap(tmp);
-            }
-            catch { /* skip bad frame */ }
-        });
+            using var ms = new MemoryStream(jpeg);
+            using var tmp = Image.FromStream(ms);
+            _frameSize = tmp.Size;
+            _pic.Image?.Dispose();
+            _pic.Image = new Bitmap(tmp);
+        }
+        catch { /* skip bad frame */ }
     }
 
     /// <summary>Map a point in the PictureBox to normalized (0..1) image coordinates (Zoom letterbox).</summary>
@@ -189,9 +207,15 @@ internal sealed class LiveViewForm : Form
     {
         _conn.FrameReceived -= OnFrame;
         _conn.MonitorsReceived -= OnMonitors;
+        _frames.Dispose();
         _pic.Image?.Dispose();
-        // Revert to the gentle thumbnail stream for the grid.
-        try { await _conn.RequestScreenAsync(maxWidth: 400, quality: 45, intervalMs: 1000); } catch { }
+        try
+        {
+            if (_control) await _conn.SetAssistanceAsync(false);
+            // Revert to the gentle thumbnail stream for the grid.
+            await _conn.RequestScreenAsync(maxWidth: 400, quality: 45, intervalMs: 1000);
+        }
+        catch { }
         base.OnFormClosed(e);
     }
 }

@@ -51,6 +51,9 @@ public enum MsgType : byte
     SessionHealth = 70,
     Question = 71,
     Answer = 72,
+    ManagedCommand = 73,
+    SessionEnded = 74,  // agent -> teacher : SessionEndNotice (why the agent closed the session)
+    StudentShared = 75, // teacher -> agent : StateRequest (this screen is being shown to the class)
 
     // --- authentication handshake (sent over TLS, before any command) ---
     AuthHello = 100,    // agent  -> teacher : AuthHello (server nonce)
@@ -144,7 +147,9 @@ public static class Frame
     }
 
     public static Task WriteJsonAsync<T>(Stream s, MsgType type, T value, CancellationToken ct = default)
-        => WriteAsync(s, type, JsonSerializer.SerializeToUtf8Bytes(value, JsonOpts), ct);
+        => WriteAsync(s, type, ToJson(value), ct);
+
+    public static byte[] ToJson<T>(T value) => JsonSerializer.SerializeToUtf8Bytes(value, JsonOpts);
 
     /// <summary>Reads one full message. Returns null on a clean end-of-stream.</summary>
     public static async Task<(MsgType Type, byte[] Payload)?> ReadAsync(Stream s, CancellationToken ct = default, int maximumBytes = Net.MaxMessageBytes)

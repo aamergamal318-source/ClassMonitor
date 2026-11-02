@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using Microsoft.Win32;
 
 namespace ClassMonitor.Shared.Updates;
 
@@ -65,6 +67,7 @@ public static class UpdateInstaller
             if (!Hash(plan.Target).Equals(plan.Sha256, StringComparison.OrdinalIgnoreCase))
                 throw new IOException("The installed copy failed verification.");
             await (launch ?? LaunchAsync)(plan.Target);
+            RecordInstalledVersion(plan.Target, plan.Sha256);
             return new InstallResult(true, "Update installed. The previous executable is kept beside the application as a backup.");
         }
         catch (Exception ex)
@@ -88,6 +91,39 @@ public static class UpdateInstaller
                 return new InstallResult(false, $"Recovery required. Previous executable: {backup}. {rollback.Message}");
             }
         }
+    }
+
+    /// <summary>
+    /// Keeps a setup-created installation truthful after an in-app update: the receipt and the Apps version.
+    /// Portable copies have no receipt. A committed update never fails because of this bookkeeping.
+    /// </summary>
+    public static void RecordInstalledVersion(string target, string sha256, Action<string, string>? writeDisplayVersion = null)
+    {
+        string? temporary = null;
+        try
+        {
+            string manifest = Path.Combine(Path.GetDirectoryName(target)!, "install-manifest.json");
+            if (!File.Exists(manifest) || JsonNode.Parse(File.ReadAllText(manifest)) is not JsonObject receipt
+                || (string?)receipt["Product"] != "ClassMonitor.ManagedDesktop" || receipt["Files"] is not JsonObject files) return;
+            var info = FileVersionInfo.GetVersionInfo(target);
+            string version = $"{info.FileMajorPart}.{info.FileMinorPart}.{info.FileBuildPart}";
+            receipt["Version"] = version;
+            files[Path.GetFileName(target)] = sha256;
+            temporary = manifest + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            File.WriteAllText(temporary, receipt.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+            File.Move(temporary, manifest, true);
+            string component = Path.GetFileName(target).Equals("ClassMonitorTeacher.exe", StringComparison.OrdinalIgnoreCase) ? "Teacher" : "Agent";
+            (writeDisplayVersion ?? WriteDisplayVersion)(component, version);
+        }
+        catch (Exception) { /* Any bookkeeping failure leaves the committed update in place. */ }
+        finally { try { if (temporary is not null && File.Exists(temporary)) File.Delete(temporary); } catch (IOException) { } }
+    }
+
+    private static void WriteDisplayVersion(string component, string version)
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\ClassMonitor-" + component, writable: true);
+        key?.SetValue("DisplayVersion", version);
     }
 
     private static async Task LaunchAsync(string executable)

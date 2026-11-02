@@ -9,6 +9,10 @@ public static partial class UiText
     {
         ["ClassMonitor — Teacher Console"] = ("ClassMonitor — لوحة المعلم", "ClassMonitor — מסוף המורה"),
         ["Classroom monitoring console"] = ("لوحة إدارة الصف", "מסוף ניהול כיתה"),
+        ["Start lesson"] = ("بدء الدرس", "התחלת שיעור"),
+        ["End lesson"] = ("إنهاء الدرس", "סיום שיעור"),
+        ["Question"] = ("سؤال", "שאלה"),
+        ["Enroll device"] = ("تسجيل جهاز", "רישום מכשיר"),
         ["Settings center"] = ("مركز الإعدادات", "מרכז ההגדרות"),
         ["Preferences apply to this console. Enrollment and permissions are controlled separately."] = ("تطبّق التفضيلات على هذه اللوحة. التسجيل والصلاحيات تُدار بشكل منفصل.", "ההעדפות חלות על מסוף זה. רישום מכשירים והרשאות מנוהלים בנפרד."),
         ["Search settings"] = ("البحث في الإعدادات", "חיפוש בהגדרות"),

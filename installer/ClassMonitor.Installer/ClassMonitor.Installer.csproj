@@ -1,10 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <OutputType>WinExe</OutputType><TargetFramework>net10.0-windows</TargetFramework><UseWindowsForms>true</UseWindowsForms>
+    <OutputType>WinExe</OutputType><TargetFramework>net10.0-windows</TargetFramework><UseWindowsForms>true</UseWindowsForms><EnableComHosting>false</EnableComHosting>
     <Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><AssemblyName>ClassMonitorSetup</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
   <ItemGroup>
+    <ProjectReference Include="../../src/ClassMonitor.Shared/ClassMonitor.Shared.csproj" />
     <EmbeddedResource Include="Core/Uninstall.ps1" LogicalName="ClassMonitor.Uninstall.ps1" />
     <EmbeddedResource Include="$(PayloadPath)" LogicalName="ClassMonitor.Payload.zip" Condition="'$(PayloadPath)' != '' and Exists('$(PayloadPath)')" />
   </ItemGroup>

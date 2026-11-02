@@ -1,4 +1,4 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings></PropertyGroup>
-  <ItemGroup><Compile Include="../ClassMonitor.Installer/Core/InstallerCore.cs" Link="InstallerCore.cs" /></ItemGroup>
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><AllowUnsafeBlocks>true</AllowUnsafeBlocks><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings></PropertyGroup>
+  <ItemGroup><Compile Include="../ClassMonitor.Installer/Core/InstallerCore.cs" Link="InstallerCore.cs" /><Compile Include="../../tests/Shared/CrashFreeReporting.cs" Link="CrashFreeReporting.cs" /></ItemGroup>
 </Project>

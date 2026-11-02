@@ -1,16 +1,18 @@
 using System.Diagnostics;
+using Microsoft.Win32;
 
 namespace ClassMonitor.Agent;
 
 /// <summary>
-/// Auto-start management for the agent. Uses a Windows Scheduled Task that runs the agent
-/// "at log on". This deliberately runs in the interactive user session (not session 0), which
-/// is required for screen capture and on-screen overlays — a classic Windows service cannot do
-/// that. Creating/removing the task requires administrator rights.
+/// Opt-in start at sign-in for this Windows account only, with the same rights and visible tray icon as a
+/// normal start. It deliberately needs no administrator rights and never creates an elevated scheduled task,
+/// because this program's folder is writable by the student.
 /// </summary>
 internal static class AgentInstaller
 {
-    public const string TaskName = "ClassMonitor Agent";
+    private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+    private const string RunValue = "ClassMonitorAgent";
+    private const string LegacyTaskName = "ClassMonitor Agent";
 
     /// <summary>Handle a command-line verb (--install / --uninstall / --status). Returns an exit code.</summary>
     public static int Run(string verb)
@@ -28,35 +30,30 @@ internal static class AgentInstaller
 
     public static bool Install(bool showResult = true)
     {
-        // /SC ONLOGON = at logon, /RL HIGHEST = run with highest privileges, /F = overwrite.
-        var (ok, output) = RunSchtasks(
-            $"/Create /TN \"{TaskName}\" /TR \"\\\"{ExePath}\\\"\" /SC ONLOGON /RL HIGHEST /F");
-        if (showResult)
-            Info(ok
-                ? "ClassMonitor Agent will now start automatically at logon."
-                : "Install failed (administrator rights are required):\n\n" + output);
-        return ok;
+        using var run = Registry.CurrentUser.CreateSubKey(RunKey);
+        run.SetValue(RunValue, '"' + ExePath + '"');
+        if (showResult) Info("ClassMonitor Agent will now start when you sign in.");
+        return true;
     }
 
     public static bool Uninstall(bool showResult = true)
     {
-        var (ok, output) = RunSchtasks($"/Delete /TN \"{TaskName}\" /F");
-        if (showResult)
-            Info(ok
-                ? "Auto-start removed."
-                : "Remove failed (administrator rights may be required):\n\n" + output);
-        return ok;
+        using (var run = Registry.CurrentUser.OpenSubKey(RunKey, writable: true))
+            run?.DeleteValue(RunValue, throwOnMissingValue: false);
+        RemoveLegacyTask();
+        if (showResult) Info("Auto-start removed.");
+        return true;
     }
 
     public static bool IsInstalled()
     {
-        var (ok, _) = RunSchtasks($"/Query /TN \"{TaskName}\"");
-        return ok;
+        using var run = Registry.CurrentUser.OpenSubKey(RunKey);
+        return run?.GetValue(RunValue) is not null;
     }
 
     private static int Status()
     {
-        Info(IsInstalled() ? "Auto-start is INSTALLED (runs at logon)." : "Auto-start is NOT installed.");
+        Info(IsInstalled() ? "Auto-start is ON for this account." : "Auto-start is OFF.");
         return 0;
     }
 
@@ -66,25 +63,18 @@ internal static class AgentInstaller
         return 2;
     }
 
-    private static (bool ok, string output) RunSchtasks(string args)
+    /// <summary>Earlier versions created an elevated task. Removing it needs the rights that created it; failure is harmless here.</summary>
+    private static void RemoveLegacyTask()
     {
         try
         {
-            using var p = Process.Start(new ProcessStartInfo("schtasks.exe", args)
+            using var process = Process.Start(new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "schtasks.exe"), $"/Delete /TN \"{LegacyTaskName}\" /F")
             {
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true,
-            })!;
-            string outp = p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd();
-            p.WaitForExit();
-            return (p.ExitCode == 0, outp.Trim());
+                UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true,
+            });
+            process?.WaitForExit(5000);
         }
-        catch (Exception ex)
-        {
-            return (false, ex.Message);
-        }
+        catch (System.ComponentModel.Win32Exception) { }
     }
 
     private static void Info(string text) =>

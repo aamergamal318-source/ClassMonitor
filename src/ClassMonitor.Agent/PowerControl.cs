@@ -16,7 +16,7 @@ internal static class PowerControl
     {
         // Safety interlock: never power off the machine that hosts the teacher console.
         if (TeacherRunsHere())
-            return;
+            throw new InvalidOperationException("This computer is running the teacher console.");
 
         string? args = action switch
         {
@@ -26,16 +26,12 @@ internal static class PowerControl
             _ => null,
         };
         if (args is null)
-            return;
+            throw new InvalidDataException("Unsupported power action.");
 
-        try
+        using var process = Process.Start(new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "shutdown.exe"), args)
         {
-            Process.Start(new ProcessStartInfo("shutdown", args)
-            {
-                CreateNoWindow = true,
-                UseShellExecute = false,
-            });
-        }
-        catch { /* shutdown may be blocked by policy; ignore */ }
+            CreateNoWindow = true,
+            UseShellExecute = false,
+        });
     }
 }

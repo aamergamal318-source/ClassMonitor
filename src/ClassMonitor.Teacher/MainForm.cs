@@ -1,5 +1,12 @@
 using System.Drawing;
+using System.Collections.Concurrent;
+using System.Security.Cryptography.X509Certificates;
 using ClassMonitor.Shared;
+using ClassMonitor.Shared.Settings;
+using ClassMonitor.Shared.Management;
+using ClassMonitor.Shared.Sessions;
+using ClassMonitor.Teacher.Management;
+using ClassMonitor.Teacher.Presentation;
 
 namespace ClassMonitor.Teacher;
 
@@ -13,15 +20,14 @@ internal sealed class MainForm : Form
 {
     private static readonly Color Accent = Color.FromArgb(0, 120, 215);
 
-    private readonly AppConfig _config = AppConfig.Load(AppConfig.TeacherConfigPath);
-    private byte[] _key;
+    private readonly AppConfig _config;
     private readonly Discovery _discovery = new();
     private readonly Dictionary<string, AgentConnection> _conns = new();
     private readonly Dictionary<string, AgentTile> _tiles = new();
     private readonly HashSet<string> _selected = new();
     private readonly HashSet<string> _locked = new();
     private readonly Dictionary<string, Recorder> _recorders = new();
-    private readonly GroupsStore _groups = GroupsStore.Load();
+    private readonly GroupsStore _groups;
     private ListBox _groupList = null!;
     private readonly UsageTracker _usage = new();
     private readonly List<string> _alertKeywords = new();
@@ -47,10 +53,33 @@ internal sealed class MainForm : Form
     private Size _tileSize = new(280, 205);
     private string? _collectFolder;   // where collected files are saved (set when a collect starts)
     private int _collectCount;         // files saved during the current collect
+    private readonly DashboardFilterBar _filter = new();
+    private Panel _classroomPanel = null!;
+    private readonly Dictionary<string, (string Machine, string DeviceId, int Port)> _seen = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, PairedDevice> _pairings = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, LatestFrameDispatcher> _renderers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, LiveViewForm> _liveViews = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ReconnectSchedule _reconnect = new();
+    private readonly System.Windows.Forms.Timer _retryTimer = new() { Interval = 2000 };
+    private readonly Dictionary<string, DateTime> _focusExpires = new(StringComparer.OrdinalIgnoreCase);
+    private readonly CancellationTokenSource _lifetime = new();
+    private X509Certificate2? _teacherIdentity;
+    private bool _closing, _applyingPreferences;
+    private readonly ToolStripButton _lessonBtn;
+    private readonly ToolStripButton _endLessonBtn;
+    private DateTimeOffset? _lessonUntil;
+    private string? _lessonClassroom;
+    private int _maintenanceTicks;
+    private readonly HashSet<string> _endedByStudent = new(StringComparer.OrdinalIgnoreCase);
+    private readonly bool _startServices;
+    private X509Certificate2 TeacherIdentity => _teacherIdentity ??= WindowsIdentityStore.GetOrCreate("Teacher");
 
-    public MainForm()
+    public MainForm(AppConfig? config = null, bool startServices = true, GroupsStore? groups = null)
     {
-        _key = Security.DeriveKey(_config.Password);
+        _config = config ?? AppConfig.Load(AppConfig.TeacherConfigPath);
+        _config.Settings.EnsureValid();
+        _groups = groups ?? GroupsStore.Load();
+        _startServices = startServices;
         Text = "ClassMonitor — Teacher Console";
         ClientSize = new Size(1180, 760);
         StartPosition = FormStartPosition.CenterScreen;
@@ -68,9 +97,16 @@ internal sealed class MainForm : Form
             BackColor = Color.FromArgb(246, 247, 249),
         };
 
+        _lessonBtn = TextButton("Start lesson", "Authorize a bounded lesson on the target machines; nothing is viewed or controlled without one", (_, _) => StartLesson());
+        tools.Items.Add(_lessonBtn);
+        _endLessonBtn = TextButton("End lesson", "End the lesson: capture stops and restrictions are restored", (_, _) => EndLesson());
+        _endLessonBtn.Visible = false;
+        tools.Items.Add(_endLessonBtn);
+        tools.Items.Add(new ToolStripSeparator());
         tools.Items.Add(TextButton("🔍  Live view", "Open live view & remote control for the selected machine", (_, _) => OpenLiveForSelection()));
         tools.Items.Add(new ToolStripSeparator());
         tools.Items.Add(TextButton("💬  Message", "Show a message on the target machines", (_, _) => MessageTargets()));
+        tools.Items.Add(TextButton("Question", "Ask the target students a question; answers appear in the alerts window", (_, _) => AskTargets()));
         tools.Items.Add(TextButton("🔒  Lock", "Lock the target screens", (_, _) => LockTargets(true)));
         tools.Items.Add(TextButton("🔓  Unlock", "Unlock the target screens", (_, _) => LockTargets(false)));
         tools.Items.Add(new ToolStripSeparator());
@@ -159,7 +195,8 @@ internal sealed class MainForm : Form
         tools.Items.Add(TextButton("☑  Select all", "Select every machine", (_, _) => SelectAll(true)));
         tools.Items.Add(TextButton("☐  Clear", "Clear the selection", (_, _) => SelectAll(false)));
         tools.Items.Add(new ToolStripSeparator());
-        tools.Items.Add(TextButton("⚙  Settings", "Set the class password (must match the agents)", (_, _) => EditSettings()));
+        tools.Items.Add(TextButton("Enroll device", "Enroll a managed device using a reviewed certificate request", (_, _) => EnrollDevice()));
+        tools.Items.Add(TextButton("⚙  Settings", "Validated console and classroom preferences", (_, _) => EditSettings()));
 
         // right-aligned thumbnail-size control
         _sizeCombo = new ToolStripComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 110 };
@@ -189,6 +226,10 @@ internal sealed class MainForm : Form
             BackColor = Color.FromArgb(238, 240, 243),
         };
         _grid.MouseDown += (_, _) => SelectAll(false); // click empty space clears selection
+        _grid.AllowDrop = true;
+        _grid.DragEnter += (_, e) => e.Effect = e.Data?.GetData(DataFormats.Text) is string host && _tiles.ContainsKey(host) ? DragDropEffects.Move : DragDropEffects.None;
+        _grid.DragDrop += OnTileDropped;
+        _filter.FilterChanged += (_, _) => ApplyDashboardFilter();
 
         // ---- Status bar ----------------------------------------------------
         var statusStrip = new StatusStrip { BackColor = Color.FromArgb(246, 247, 249) };
@@ -200,26 +241,39 @@ internal sealed class MainForm : Form
         statusStrip.Items.Add(updates);
         _updates = new ClassMonitor.Desktop.UpdateController(ClassMonitor.Shared.Updates.UpdateComponent.Teacher,
             this, updates, Close);
-        Shown += async (_, _) => await _updates.CheckAtStartupAsync();
+        Shown += async (_, _) => { if (_startServices) await _updates.CheckAtStartupAsync(); };
 
         Controls.Add(_grid);
-        Controls.Add(BuildGroupsPanel());
+        Controls.Add(_filter);
+        _classroomPanel = BuildGroupsPanel();
+        Controls.Add(_classroomPanel);
         Controls.Add(tools);
         Controls.Add(BuildHeader());   // added after tools so it sits above the toolbar
         Controls.Add(statusStrip);
 
         _broadcastTimer.Tick += (_, _) => BroadcastTick();
         _studentBroadcastTimer.Tick += (_, _) => StudentBroadcastTick();
-        _activityTimer.Tick += (_, _) => RefreshActivityState();
+        _activityTimer.Tick += (_, _) =>
+        {
+            RefreshActivityState();
+            if (++_maintenanceTicks % 15 == 0 || _recorders.Count > 0) MaintainRecordings();
+        };
         _snapTimer.Tick += (_, _) => SnapshotTick();
+        _retryTimer.Tick += (_, _) => RetryKnownDevices();
         _discovery.AgentSeen += OnAgentSeen;
         Load += (_, _) =>
         {
+            ApplyPreferences();
+            if (!_startServices) return;
             _activityTimer.Start();
-            _discovery.Start();
+            _retryTimer.Start();
+            RestartDiscovery();
+            MaintainRecordings();
+            foreach (var peer in _config.PairedDevices) AddOrConnect(peer.Host, peer.Enrollment.DeviceId, peer.Port, peer.Enrollment.DeviceId);
             foreach (var host in _config.ManualHosts.Where(h => !string.IsNullOrWhiteSpace(h)).Distinct(StringComparer.OrdinalIgnoreCase))
                 AddOrConnect(host.Trim(), host.Trim(), Net.AgentTcpPort);
         };
+        ApplyPreferences();
     }
 
     private static Panel BuildHeader()
@@ -344,32 +398,61 @@ internal sealed class MainForm : Form
 
     // ---- Discovery / connection lifecycle ---------------------------------
 
-    private void OnAgentSeen(string host, string machine, string user, int port)
-    {
-        if (!IsHandleCreated) return;
-        BeginInvoke(() => AddOrConnect(host, machine, port));
-    }
+    private void OnAgentSeen(string host, string machine, string status, int port, string deviceId)
+        => QueueUi(() => AddOrConnect(host, machine, port, deviceId));
 
-    private void AddOrConnect(string host, string machine, int port)
+    private void AddOrConnect(string host, string machine, int port, string? deviceId = null)
     {
-        if (_conns.ContainsKey(host)) return;
-
-        var conn = new AgentConnection(host, machine, port, _key);
+        if (_closing || _conns.ContainsKey(host) || host.Length > 253) return;
+        if (!_seen.ContainsKey(host) && _seen.Count >= 500) return;
+        _seen[host] = (machine, deviceId ?? "", port);
+        var pairing = PairingLookup.Find(_config.PairedDevices, host, deviceId);
+        if (!_tiles.TryGetValue(host, out var tile))
+        {
+            tile = new AgentTile(host, machine, _tileSize) { Tag = host };
+            tile.Clicked += ctrl => OnTileClicked(host, ctrl);
+            tile.OpenRequested += () =>
+            {
+                if (_conns.TryGetValue(host, out var current) && current.HasPermission(ClassroomPermission.View)) OpenLive(current);
+                else _status.Text = UiText.Text("Enrollment and an active lesson are required", _config.Settings.General.Language);
+            };
+            tile.ApplyPreferences(_config.Settings);
+            _tiles[host] = tile;
+            _grid.Controls.Add(tile);
+        }
+        if (pairing is null)
+        {
+            bool expired = _config.PairedDevices.Any(p => (p.Enrollment.DeviceId == deviceId || string.Equals(p.Host, host, StringComparison.OrdinalIgnoreCase)) && PairingLookup.IsExpired(p));
+            tile.SetPresence("pending", expired ? "Enrollment expired. Enroll this device again." : "Enrollment and an active lesson are required");
+            ApplyDashboardFilter();
+            return;
+        }
+        _pairings[host] = pairing;
+        if (!_startServices || !_reconnect.CanTry(host, DateTimeOffset.UtcNow)) return;
+        AgentConnection conn;
+        try { conn = new AgentConnection(host, machine, pairing, TeacherIdentity, _config.Settings); }
+        catch (Exception ex) when (ex is System.Security.Cryptography.CryptographicException or InvalidOperationException)
+        {
+            tile.SetPresence("unhealthy", ex.Message);
+            _reconnect.Failed(host, DateTimeOffset.UtcNow);
+            return;
+        }
         _conns[host] = conn;
-
-        var tile = new AgentTile(conn, _tileSize);
-        tile.Clicked += ctrl => OnTileClicked(host, ctrl);
-        tile.OpenRequested += () => OpenLive(conn);
+        tile.SetPresence("connecting");
+        tile.ContextMenuStrip?.Dispose();
         tile.ContextMenuStrip = BuildTileMenu(conn);
-        _tiles[host] = tile;
-        _grid.Controls.Add(tile);
-
+        _renderers[host] = new LatestFrameDispatcher(this, bytes =>
+        {
+            if (_conns.TryGetValue(host, out var current) && ReferenceEquals(current, conn) && _tiles.TryGetValue(host, out var target)) target.SetFrame(bytes);
+        });
         conn.FrameReceived += OnFrame;
         conn.Disconnected += OnDisconnected;
         conn.FileCollected += OnFileCollected;
         conn.ActivityReceived += OnActivity;
-
-        UpdateStatus();
+        conn.AnswerReceived += OnAnswer;
+        conn.StatusChanged += OnConnectionStatusChanged;
+        conn.CommandFeedback += OnCommandFeedback;
+        ApplyDashboardFilter();
         _ = ConnectAsync(conn);
     }
 
@@ -378,39 +461,146 @@ internal sealed class MainForm : Form
         try
         {
             await conn.ConnectAsync();
-            if (_broadcasting) await conn.SetBroadcastAsync(true);
+            if (_closing) return;
+            _reconnect.Connected(conn.Host);
+            if (_tiles.TryGetValue(conn.Host, out var tile)) tile.SetPresence("online");
+            // A reconnect during a running lesson asks for a new session; the agent never resumes an old one.
+            if (_lessonUntil > DateTimeOffset.UtcNow && !_endedByStudent.Contains(conn.Host)) await BeginLessonAsync(conn);
+            ApplyDashboardFilter();
         }
-        catch { OnDisconnected(conn); }
+        catch (Exception ex) when (ex is not ObjectDisposedException)
+        {
+            conn.Fail(ex.Message);
+            QueueUi(() => _status.Text = $"{conn.MachineName}: {ex.Message}");
+            OnDisconnected(conn);
+        }
+    }
+
+    private async Task BeginLessonAsync(AgentConnection conn)
+    {
+        if (_lessonUntil is not { } until || conn.Enrollment.ClassroomId != _lessonClassroom || !await conn.StartLessonAsync(until)) return;
+        if (conn.HasPermission(ClassroomPermission.View)) await conn.RequestAdaptiveStreamAsync(_conns.Count);
+        if (_broadcasting) await conn.SetBroadcastAsync(true);
+        if (_snapTimer.Enabled && conn.HasPermission(ClassroomPermission.Record)) await conn.SetRecordingAsync(true);
+    }
+
+    private void StartLesson()
+    {
+        if (_conns.Count == 0)
+        {
+            _status.Text = UiText.Text("Enrollment and an active lesson are required", _config.Settings.General.Language);
+            return;
+        }
+        var classrooms = _conns.Values.Select(c => c.Enrollment.ClassroomId).Distinct().OrderBy(c => c).ToList();
+        string classroom = classrooms[0];
+        if (classrooms.Count > 1)
+        {
+            var chosen = Prompt.Show("Start lesson", $"Classroom for this lesson ({string.Join(", ", classrooms)}):", classroom);
+            if (chosen is null) return;
+            if (!classrooms.Contains(chosen.Trim()))
+            {
+                _status.Text = "Choose one of the listed classrooms.";
+                return;
+            }
+            classroom = chosen.Trim();
+        }
+        var text = Prompt.Show("Start lesson", $"Lesson length for {classroom} in minutes (1-480):", "45");
+        if (text is null) return;
+        if (!int.TryParse(text, out int minutes) || minutes is < 1 or > 480)
+        {
+            _status.Text = "Lesson length must be between 1 and 480 minutes.";
+            return;
+        }
+        _lessonUntil = DateTimeOffset.UtcNow.AddMinutes(minutes);
+        _lessonClassroom = classroom;
+        _endedByStudent.Clear();
+        _lessonBtn.Visible = false;
+        _endLessonBtn.Visible = true;
+        foreach (var conn in _conns.Values.ToList()) _ = BeginLessonAsync(conn);
+        _status.Text = $"Lesson running until {_lessonUntil.Value.LocalDateTime:t}.";
+    }
+
+    /// <summary>Each agent stops capture, restores what the session owns and closes; thumbnails are cleared.</summary>
+    private void EndLesson()
+    {
+        _lessonUntil = null;
+        _lessonClassroom = null;
+        _endedByStudent.Clear();
+        _lessonBtn.Visible = true;
+        _endLessonBtn.Visible = false;
+        if (_broadcastBtn.Checked) _broadcastBtn.Checked = false;
+        if (_studentBroadcastBtn.Checked) _studentBroadcastBtn.Checked = false;
+        _snapTimer.Stop();
+        foreach (var conn in _recorders.Keys.Where(_conns.ContainsKey).Select(h => _conns[h]).ToList()) StopRecording(conn);
+        foreach (var conn in _conns.Values.ToList()) _ = conn.EndLessonAsync();
+        _status.Text = "Lesson ended.";
     }
 
     private void OnFrame(AgentConnection conn, byte[] jpeg)
     {
-        if (!IsHandleCreated) return;
-        BeginInvoke(() =>
-        {
-            if (_tiles.TryGetValue(conn.Host, out var tile))
-                tile.SetFrame(jpeg);
-        });
+        if (_renderers.TryGetValue(conn.Host, out var dispatcher)) dispatcher.Submit(jpeg);
     }
 
     private void OnDisconnected(AgentConnection conn)
     {
-        if (!IsHandleCreated) return;
-        BeginInvoke(() =>
+        QueueUi(() =>
         {
+            if (!_conns.TryGetValue(conn.Host, out var current) || !ReferenceEquals(current, conn)) return;
             if (_recorders.Remove(conn.Host, out var rec)) rec.Dispose();
-            if (_tiles.Remove(conn.Host, out var tile)) { _grid.Controls.Remove(tile); tile.Dispose(); }
+            if (_renderers.TryRemove(conn.Host, out var renderer)) renderer.Dispose();
+            if (_liveViews.Remove(conn.Host, out var live)) live.Close();
+            if (conn.EndedByStudent)
+            {
+                // The student's decision stands until the teacher starts another lesson.
+                _endedByStudent.Add(conn.Host);
+                _status.Text = $"{conn.MachineName}: the student ended this session.";
+            }
+            if (_tiles.TryGetValue(conn.Host, out var tile)) { tile.SetPresence("offline", conn.EndedByStudent ? "The student ended this session." : conn.LastReadError); tile.SetLive(false); }
             if (_conns.Remove(conn.Host, out var c)) c.Dispose();
+            _reconnect.Failed(conn.Host, DateTimeOffset.UtcNow);
             _selected.Remove(conn.Host);
             _locked.Remove(conn.Host);
+            _focusExpires.Remove(conn.Host);
 
             if (_studentBroadcastSource == conn)
             {
                 ToggleStudentBroadcast(false);
             }
 
-            UpdateStatus();
+            ApplyDashboardFilter();
         });
+    }
+
+    private void QueueUi(Action action)
+    {
+        if (_closing || IsDisposed || !IsHandleCreated) return;
+        try { BeginInvoke(() => { if (!_closing && !IsDisposed) action(); }); }
+        catch (InvalidOperationException) { }
+    }
+
+    private void OnCommandFeedback(AgentConnection conn, string message)
+        => QueueUi(() => _status.Text = message);
+
+    private void OnConnectionStatusChanged(AgentConnection conn)
+        => QueueUi(() =>
+        {
+            if (!conn.HasPermission(ClassroomPermission.Record) && _recorders.ContainsKey(conn.Host)) StopRecording(conn);
+            if (!conn.HasPermission(ClassroomPermission.Assist) && _liveViews.TryGetValue(conn.Host, out var live)) live.ReleaseAssistance();
+            RefreshActivityState();
+        });
+
+    private void RetryKnownDevices()
+    {
+        if (_closing || !_startServices) return;
+        if (_lessonUntil <= DateTimeOffset.UtcNow) EndLesson();
+        foreach (var pair in _config.PairedDevices)
+        {
+            string host = _seen.FirstOrDefault(x => x.Value.DeviceId == pair.Enrollment.DeviceId).Key ?? pair.Host;
+            if (_conns.ContainsKey(host) || !_reconnect.CanTry(host, DateTimeOffset.UtcNow)) continue;
+            // Another enrolled account is signed in on that computer; its pin would not match this record.
+            if (_seen.TryGetValue(host, out var current) && current.DeviceId.Length != 0 && current.DeviceId != pair.Enrollment.DeviceId) continue;
+            AddOrConnect(host, _seen.TryGetValue(host, out var seen) ? seen.Machine : pair.Enrollment.DeviceId, pair.Port, pair.Enrollment.DeviceId);
+        }
     }
 
     // ---- Selection --------------------------------------------------------
@@ -430,14 +620,7 @@ internal sealed class MainForm : Form
         if (_studentBroadcasting)
         {
             var source = ResolveStudentBroadcastSource();
-            if (source is null)
-            {
-                ToggleStudentBroadcast(false);
-            }
-            else
-            {
-                _studentBroadcastSource = source;
-            }
+            if (source != _studentBroadcastSource) _studentBroadcastBtn.Checked = false;
         }
 
         RefreshSelectionVisuals();
@@ -475,8 +658,8 @@ internal sealed class MainForm : Form
         menu.Items.Add("Live view && remote control", null, (_, _) => OpenLive(conn));
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Send message…", null, (_, _) => { var t = Prompt.Show("Message", $"Message for {conn.MachineName}:"); if (!string.IsNullOrWhiteSpace(t)) _ = conn.SendMessageAsync(t, 8000); });
-        menu.Items.Add("Lock screen", null, (_, _) => { _locked.Add(conn.Host); _tiles[conn.Host].SetLocked(true); _ = conn.LockAsync(true, "Screen locked by the teacher."); });
-        menu.Items.Add("Unlock screen", null, (_, _) => { _locked.Remove(conn.Host); _tiles[conn.Host].SetLocked(false); _ = conn.LockAsync(false, ""); });
+        menu.Items.Add("Lock screen", null, (_, _) => { if (conn.HasPermission(ClassroomPermission.Focus) && ConfirmFocus("Lock screens", 1)) { _locked.Add(conn.Host); _tiles[conn.Host].SetLocked(true); _ = conn.LockAsync(true, "Screen locked by the teacher."); } });
+        menu.Items.Add("Unlock screen", null, (_, _) => { if (conn.HasPermission(ClassroomPermission.Focus)) { _locked.Remove(conn.Host); _tiles[conn.Host].SetLocked(false); _ = conn.LockAsync(false, ""); } });
         menu.Items.Add(new ToolStripSeparator());
 
         var pm = new ToolStripMenuItem("Power");
@@ -531,9 +714,20 @@ internal sealed class MainForm : Form
 
     private void OpenLive(AgentConnection conn)
     {
+        if (!conn.HasPermission(ClassroomPermission.View))
+        {
+            _status.Text = UiText.Text("Enrollment and an active lesson are required", _config.Settings.General.Language);
+            return;
+        }
+        if (_liveViews.TryGetValue(conn.Host, out var existing)) { existing.BringToFront(); return; }
         if (_tiles.TryGetValue(conn.Host, out var tile)) tile.SetLive(true);
         var form = new LiveViewForm(conn) { Owner = this };
-        form.FormClosed += (_, _) => { if (_tiles.TryGetValue(conn.Host, out var t)) t.SetLive(false); };
+        _liveViews[conn.Host] = form;
+        form.FormClosed += (_, _) =>
+        {
+            _liveViews.Remove(conn.Host);
+            if (_tiles.TryGetValue(conn.Host, out var t)) t.SetLive(false);
+        };
         form.Show();
     }
 
@@ -544,10 +738,28 @@ internal sealed class MainForm : Form
         foreach (var c in Targets()) _ = c.SendMessageAsync(text, 8000);
     }
 
+    private void AskTargets()
+    {
+        var text = Prompt.Show("Question", "Question for the target students:");
+        if (string.IsNullOrWhiteSpace(text)) return;
+        ShowAlerts();
+        foreach (var c in Targets()) _ = c.AskQuestionAsync(text);
+    }
+
+    private void OnAnswer(AgentConnection conn, AnswerMsg answer) =>
+        QueueUi(() => _alertsForm?.Add(DateTime.Now, conn.MachineName, "Answer: " + answer.Text));
+
+    private bool ConfirmFocus(string action, int devices) =>
+        !_config.Settings.Policies.ConfirmBeforeFocus || devices == 0 || MessageBox.Show(
+            $"{action} on {devices} machine(s)? It ends with the lesson or after {_config.Settings.Policies.MaximumFocusMinutes} minutes.",
+            "Confirm focus", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
+
     private void LockTargets(bool locked)
     {
         string text = locked ? "Screen locked by the teacher." : "";
-        foreach (var c in Targets())
+        var targets = Targets().Where(c => c.HasPermission(ClassroomPermission.Focus)).ToList();
+        if (locked && !ConfirmFocus("Lock screens", targets.Count)) return;
+        foreach (var c in targets)
         {
             if (locked) _locked.Add(c.Host); else _locked.Remove(c.Host);
             if (_tiles.TryGetValue(c.Host, out var t)) t.SetLocked(locked);
@@ -604,9 +816,9 @@ internal sealed class MainForm : Form
         byte[] bytes;
         try { bytes = File.ReadAllBytes(dlg.FileName); }
         catch (Exception ex) { MessageBox.Show(ex.Message, "Send file", MessageBoxButtons.OK, MessageBoxIcon.Error); return; }
-        if (bytes.Length > 12 * 1024 * 1024)
+        if (bytes.LongLength > _config.Settings.Files.MaximumTransferBytes)
         {
-            MessageBox.Show("File is too large (max ~12 MB in this version).", "Send file",
+            MessageBox.Show($"File is too large (the limit is {_config.Settings.Files.MaximumTransferMiB} MiB).", "Send file",
                 MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
@@ -616,8 +828,8 @@ internal sealed class MainForm : Form
 
     private void CollectFileOne(AgentConnection conn)
     {
-        var path = Prompt.Show("Collect file", $"Full path of the file to collect from {conn.MachineName}:",
-            @"C:\Users\Public\Documents\assignment.docx");
+        var path = Prompt.Show("Collect file", $"File to collect from the approved lesson folder on {conn.MachineName}:",
+            "assignment.docx");
         if (string.IsNullOrWhiteSpace(path)) return;
         using var dlg = new FolderBrowserDialog { Description = "Where to save the collected file" };
         if (dlg.ShowDialog() != DialogResult.OK) return;
@@ -639,9 +851,9 @@ internal sealed class MainForm : Form
         try { bytes = File.ReadAllBytes(dlg.FileName); }
         catch (Exception ex) { MessageBox.Show(ex.Message, "Send file", MessageBoxButtons.OK, MessageBoxIcon.Error); return; }
 
-        if (bytes.Length > 12 * 1024 * 1024)
+        if (bytes.LongLength > _config.Settings.Files.MaximumTransferBytes)
         {
-            MessageBox.Show("File is too large (max ~12 MB in this version).", "Send file",
+            MessageBox.Show($"File is too large (the limit is {_config.Settings.Files.MaximumTransferMiB} MiB).", "Send file",
                 MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
@@ -656,8 +868,8 @@ internal sealed class MainForm : Form
         var list = Targets().ToList();
         if (list.Count == 0) return;
 
-        var path = Prompt.Show("Collect file", "Full path of the file to collect from each student:",
-            @"C:\Users\Public\Documents\assignment.docx");
+        var path = Prompt.Show("Collect file", "File to collect from each student's approved lesson folder:",
+            "assignment.docx");
         if (string.IsNullOrWhiteSpace(path)) return;
 
         using var dlg = new FolderBrowserDialog { Description = "Where to save the collected files" };
@@ -684,8 +896,7 @@ internal sealed class MainForm : Form
             {
                 Directory.CreateDirectory(_collectFolder);
                 string safeMachine = string.Concat(conn.MachineName.Split(Path.GetInvalidFileNameChars()));
-                string dest = Path.Combine(_collectFolder, $"{safeMachine}_{data.FileName}");
-                File.WriteAllBytes(dest, Convert.FromBase64String(data.DataBase64));
+                WriteNewFile(_collectFolder, $"{safeMachine}_{Path.GetFileName(data.FileName)}", Convert.FromBase64String(data.DataBase64));
                 _collectCount++;
                 _status.Text = $"Collected {_collectCount} file(s) → {_collectFolder}";
             }
@@ -693,29 +904,90 @@ internal sealed class MainForm : Form
         });
     }
 
-    private void StartRecording(AgentConnection conn)
+    /// <summary>A name sent by a device never overwrites a file; a repeat gets a numbered name.</summary>
+    private static void WriteNewFile(string folder, string name, byte[] bytes)
+    {
+        string stem = Path.GetFileNameWithoutExtension(name), extension = Path.GetExtension(name);
+        for (int suffix = 0; suffix < 10000; suffix++)
+        {
+            string candidate = ApprovedFilePaths.ResolveFileName(folder, suffix == 0 ? name : $"{stem} ({suffix}){extension}");
+            try
+            {
+                using var output = new FileStream(candidate, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                output.Write(bytes);
+                return;
+            }
+            catch (IOException) when (File.Exists(candidate)) { }
+        }
+        throw new IOException("Too many files share this name.");
+    }
+
+    /// <summary>Retention runs without waiting for a new recording, and the storage limit also holds during one.</summary>
+    private void MaintainRecordings()
+    {
+        var settings = _config.Settings.Recording;
+        try
+        {
+            RecordingRetention.PruneExpired(settings.Directory, settings.RetentionDays, DateTimeOffset.UtcNow);
+            if (RecordingRetention.OwnedStorageBytes(settings.Directory) < settings.MaximumStorageMiB * 1024L * 1024) return;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException) { return; }
+        if (_recorders.Count == 0 && !_snapTimer.Enabled) return;
+        _snapTimer.Stop();
+        foreach (var conn in _recorders.Keys.Where(_conns.ContainsKey).Select(h => _conns[h]).ToList()) StopRecording(conn);
+        foreach (var conn in _conns.Values.Where(c => c.Recording).ToList()) _ = conn.SetRecordingAsync(false);
+        _status.Text = "The recording storage limit is reached, so recording stopped.";
+    }
+
+    /// <summary>Opt-in, per device: console preference, explicit confirmation, granted capability and the agent's visible state.</summary>
+    private async void StartRecording(AgentConnection conn)
     {
         if (_recorders.ContainsKey(conn.Host)) return;
-
-        using var dlg = new SaveFileDialog
+        var settings = _config.Settings.Recording;
+        if (!settings.AllowRecording)
         {
-            Title = "Save recording",
-            Filter = "AVI video (*.avi)|*.avi",
-            FileName = $"{conn.MachineName}_{DateTime.Now:yyyyMMdd_HHmmss}.avi",
-        };
-        if (dlg.ShowDialog() != DialogResult.OK) return;
+            _status.Text = "Recording is off. Enable it in Settings before starting.";
+            return;
+        }
+        if (!conn.HasPermission(ClassroomPermission.Record))
+        {
+            _status.Text = "Operation is not authorized by classroom/session policy.";
+            return;
+        }
+        if (MessageBox.Show($"Record {conn.MachineName}? The student sees a recording notice. Files stay in the recording folder for {settings.RetentionDays} day(s).",
+            "Confirm recording", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+        string path;
+        try
+        {
+            RecordingRetention.PruneExpired(settings.Directory, settings.RetentionDays, DateTimeOffset.UtcNow);
+            if (RecordingRetention.OwnedStorageBytes(settings.Directory) >= settings.MaximumStorageMiB * 1024L * 1024)
+            {
+                _status.Text = "The recording storage limit is reached. Remove recordings or raise the limit.";
+                return;
+            }
+            Directory.CreateDirectory(settings.Directory);
+            string safeName = string.Concat(conn.MachineName.Split(Path.GetInvalidFileNameChars()));
+            path = ApprovedFilePaths.ResolveFileName(settings.Directory, $"classmonitor-{safeName}-{DateTime.Now:yyyyMMdd-HHmmss}.avi");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            _status.Text = ex.Message;
+            return;
+        }
+        if (!await conn.SetRecordingAsync(true)) return;
 
         // Make sure frames keep flowing at a decent rate while recording.
         _ = conn.RequestScreenAsync(maxWidth: 1280, quality: 60, intervalMs: 200);
 
-        _recorders[conn.Host] = new Recorder(conn, dlg.FileName);
+        _recorders[conn.Host] = new Recorder(conn, path);
         if (_tiles.TryGetValue(conn.Host, out var tile)) tile.SetRecording(true);
-        _status.Text = $"Recording {conn.MachineName} → {dlg.FileName}";
+        _status.Text = $"Recording {conn.MachineName} → {path}";
     }
 
     private void StopRecording(AgentConnection conn)
     {
         if (!_recorders.Remove(conn.Host, out var rec)) return;
+        if (!_snapTimer.Enabled) _ = conn.SetRecordingAsync(false);
         int frames = rec.FrameCount;
         string path = rec.Path;
         rec.Dispose();
@@ -758,18 +1030,109 @@ internal sealed class MainForm : Form
 
     private void EditSettings()
     {
-        var pwd = Prompt.Show("Settings",
-            "Class password (must match the password configured on the agents):",
-            _config.Password);
-        if (pwd is null) return;
+        using var form = new SettingsCenterForm(_config.Settings, updated =>
+        {
+            _config.Settings = updated;
+            _config.Save(AppConfig.TeacherConfigPath);
+            ApplyPreferences();
+            if (_startServices) RestartDiscovery();
+        }, EnrollDevice);
+        form.ShowDialog(this);
+    }
 
-        _config.Password = pwd;
-        try { _config.Save(AppConfig.TeacherConfigPath); } catch { }
-        _key = Security.DeriveKey(pwd);
+    private void EnrollDevice()
+    {
+        X509Certificate2 identity;
+        try { identity = TeacherIdentity; }
+        catch (Exception ex) when (ex is System.Security.Cryptography.CryptographicException or InvalidOperationException)
+        {
+            MessageBox.Show(this, ex.Message, "Enroll device", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        using var form = new EnrollDeviceForm(identity, _config.Settings);
+        if (form.ShowDialog(this) != DialogResult.OK || form.Enrolled is not { } device) return;
+        EnrollmentWorkflow.Save(_config.PairedDevices, device);
+        try { _config.Save(AppConfig.TeacherConfigPath); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            MessageBox.Show(this, ex.Message, "Enroll device", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        _reconnect.Connected(device.Host);
+        AddOrConnect(device.Host, device.Enrollment.DeviceId, device.Port, device.Enrollment.DeviceId);
+    }
 
-        // Reconnect everything with the new key (discovery will re-add the agents).
-        foreach (var c in _conns.Values.ToList()) c.Dispose();
-        _status.Text = "Password updated — reconnecting…";
+    private void RestartDiscovery()
+    {
+        try { _discovery.Start(_config.Settings.Network); }
+        catch (Exception ex) when (ex is System.Net.Sockets.SocketException or ArgumentException)
+        { _status.Text = "Discovery is unavailable: " + ex.Message; }
+    }
+
+    private void ApplyPreferences()
+    {
+        if (_applyingPreferences) return;
+        _applyingPreferences = true;
+        try
+        {
+            var settings = _config.Settings;
+            TeacherExperience.Apply(this, settings);
+            _filter.ApplyPreferences(settings);
+            if (settings.Layout.RememberWindowBounds && !Visible)
+                ClientSize = new Size(settings.Layout.WindowWidth, settings.Layout.WindowHeight);
+            _classroomPanel.Width = settings.Layout.SidebarWidth;
+            _tileSize = new Size(settings.Display.ThumbnailWidth, settings.Display.ThumbnailHeight);
+            foreach (var tile in _tiles.Values) { tile.ApplyPreferences(settings); tile.SetTileSize(_tileSize); }
+            ApplyDashboardFilter();
+        }
+        finally { _applyingPreferences = false; }
+    }
+
+    private void ApplyDashboardFilter()
+    {
+        var layout = _config.Settings.Layout;
+        var ordered = _tiles.OrderBy(pair =>
+        {
+            int saved = layout.DeviceOrder.FindIndex(id => string.Equals(id, pair.Key, StringComparison.OrdinalIgnoreCase));
+            return saved < 0 ? int.MaxValue : saved;
+        });
+        ordered = layout.DeviceSort == "presence"
+            ? ordered.ThenBy(pair => pair.Value.Presence == "online" ? 0 : 1).ThenBy(pair => DeviceName(pair.Key), StringComparer.CurrentCultureIgnoreCase)
+            : ordered.ThenBy(pair => DeviceName(pair.Key), StringComparer.CurrentCultureIgnoreCase);
+        int visible = 0, position = 0;
+        _grid.SuspendLayout();
+        foreach (var (host, tile) in ordered)
+        {
+            _grid.Controls.SetChildIndex(tile, position++);
+            string classroom = _pairings.TryGetValue(host, out var pairing) ? pairing.Enrollment.ClassroomId : "";
+            tile.Visible = DashboardQuery.Matches(new DeviceSearchEntry(host, DeviceName(host), classroom, tile.Presence), _filter.SearchText, _filter.PresenceFilter);
+            if (tile.Visible) visible++;
+        }
+        _grid.ResumeLayout();
+        _filter.SetResultCount(visible, _tiles.Count);
+        UpdateStatus();
+    }
+
+    private string DeviceName(string host) =>
+        _conns.TryGetValue(host, out var conn) ? conn.MachineName : _seen.TryGetValue(host, out var seen) ? seen.Machine : host;
+
+    private void OnTileDropped(object? sender, DragEventArgs e)
+    {
+        if (e.Data?.GetData(DataFormats.Text) is not string host || !_tiles.TryGetValue(host, out var moved)) return;
+        var over = _grid.GetChildAtPoint(_grid.PointToClient(new Point(e.X, e.Y)));
+        var order = _grid.Controls.OfType<AgentTile>().Where(t => t != moved).ToList();
+        int index = over is AgentTile target ? order.IndexOf(target) : order.Count;
+        order.Insert(Math.Max(0, index), moved);
+        _config.Settings.Layout.DeviceOrder = order.Select(t => (string)t.Tag!).Take(500).ToList();
+        SavePreferencesQuietly();
+        ApplyDashboardFilter();
+    }
+
+    private void SavePreferencesQuietly()
+    {
+        try { _config.Save(AppConfig.TeacherConfigPath); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
+        { _status.Text = "Preferences were not saved: " + ex.Message; }
     }
 
     private void RestrictTargets(string kind, bool enabled, string[] items, string? mode = null)
@@ -829,6 +1192,7 @@ internal sealed class MainForm : Form
             }
             if (hit)
             {
+                if (_config.Settings.General.NotificationsEnabled) System.Media.SystemSounds.Exclamation.Play();
                 string text = $"{act.WindowTitle} [{act.ProcessName}]";
                 _alertsForm?.Add(DateTime.Now, conn.MachineName, text);
                 _status.Text = $"⚠ Alert — {conn.MachineName}: {act.WindowTitle}";
@@ -847,16 +1211,26 @@ internal sealed class MainForm : Form
 
     private void SetSnapshots(int minutes)
     {
-        if (minutes <= 0) { _snapTimer.Stop(); _status.Text = "Snapshots off."; return; }
-
-        if (_snapFolder is null)
+        if (minutes <= 0)
         {
-            using var dlg = new FolderBrowserDialog { Description = "Where to save periodic snapshots" };
-            if (dlg.ShowDialog() != DialogResult.OK) return;
-            _snapFolder = dlg.SelectedPath;
+            _snapTimer.Stop();
+            foreach (var c in _conns.Values.Where(c => c.Recording && !_recorders.ContainsKey(c.Host)).ToList()) _ = c.SetRecordingAsync(false);
+            _status.Text = "Snapshots off.";
+            return;
         }
+        // Saved images are recordings: same preference, confirmation, capability, notice, folder and retention.
+        var recording = _config.Settings.Recording;
+        if (!recording.AllowRecording)
+        {
+            _status.Text = "Recording is off. Enable it in Settings before starting.";
+            return;
+        }
+        if (!_snapTimer.Enabled && MessageBox.Show($"Save a screen image of each authorized student every {minutes} minute(s)? Students see a recording notice. Images stay in the recording folder for {recording.RetentionDays} day(s).",
+            "Confirm recording", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+        _snapFolder = recording.Directory;
         _snapTimer.Interval = minutes * 60 * 1000;
         _snapTimer.Start();
+        foreach (var c in _conns.Values.Where(c => c.HasPermission(ClassroomPermission.Record) && !c.Recording).ToList()) _ = c.SetRecordingAsync(true);
         _status.Text = $"Snapshots every {minutes} min → {_snapFolder}";
     }
 
@@ -867,12 +1241,12 @@ internal sealed class MainForm : Form
         foreach (var c in _conns.Values)
         {
             var frame = c.LastFrame;
-            if (frame is null) continue;
+            if (frame is null || !c.Recording || !c.HasPermission(ClassroomPermission.Record)) continue;
             try
             {
                 Directory.CreateDirectory(_snapFolder);
                 string safe = string.Concat(c.MachineName.Split(Path.GetInvalidFileNameChars()));
-                File.WriteAllBytes(Path.Combine(_snapFolder, $"{safe}_{DateTime.Now:yyyyMMdd_HHmmss}.jpg"), frame);
+                WriteNewFile(_snapFolder, $"classmonitor-{safe}-{DateTime.Now:yyyyMMdd-HHmmss}.jpg", frame);
                 n++;
             }
             catch { }
@@ -922,7 +1296,7 @@ internal sealed class MainForm : Form
         if (on) _broadcastTimer.Start(); else _broadcastTimer.Stop();
     }
 
-    private void ToggleStudentBroadcast(bool on)
+    private async void ToggleStudentBroadcast(bool on)
     {
         if (on)
         {
@@ -937,6 +1311,12 @@ internal sealed class MainForm : Form
                 return;
             }
 
+            if (MessageBox.Show($"Show {source.MachineName}'s screen to the class? The student sees a notice first.", "Show selected student",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes || !await source.SetSharedAsync(true))
+            {
+                _studentBroadcastBtn.Checked = false;
+                return;
+            }
             _studentBroadcastSource = source;
             _studentBroadcasting = true;
             _studentBroadcastBtn.Text = "📺  Stop selected-student broadcast";
@@ -945,6 +1325,7 @@ internal sealed class MainForm : Form
             return;
         }
 
+        if (_studentBroadcastSource is { } previous) _ = previous.SetSharedAsync(false);
         _studentBroadcasting = false;
         _studentBroadcastSource = null;
         _studentBroadcastBtn.Text = "📺  Show selected student";
@@ -1005,6 +1386,9 @@ internal sealed class MainForm : Form
     private void ApplyTileSize(int index)
     {
         _tileSize = index switch { 0 => new Size(200, 150), 2 => new Size(360, 260), _ => new Size(280, 205) };
+        _config.Settings.Display.ThumbnailWidth = _tileSize.Width;
+        _config.Settings.Display.ThumbnailHeight = _tileSize.Height;
+        SavePreferencesQuietly();
         _grid.SuspendLayout();
         foreach (var tile in _tiles.Values) tile.SetTileSize(_tileSize);
         _grid.ResumeLayout();
@@ -1012,6 +1396,18 @@ internal sealed class MainForm : Form
 
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
+        _closing = true;
+        _lifetime.Cancel();
+        if (_config.Settings.Layout.RememberWindowBounds && WindowState == FormWindowState.Normal)
+        {
+            _config.Settings.Layout.WindowWidth = Math.Clamp(ClientSize.Width, 900, 7680);
+            _config.Settings.Layout.WindowHeight = Math.Clamp(ClientSize.Height, 600, 4320);
+            _config.Settings.Layout.SidebarWidth = Math.Clamp(_classroomPanel.Width, 160, 480);
+            if (_startServices) SavePreferencesQuietly();
+        }
+        _retryTimer.Stop();
+        foreach (var renderer in _renderers.Values) renderer.Dispose();
+        _teacherIdentity?.Dispose();
         _updates.Dispose();
         _broadcastTimer.Stop();
         _studentBroadcastTimer.Stop();
